@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VECTRA — AI NPC 模拟系统</title>
+  <link rel="stylesheet" href="css/style.css?v=5">
+</head>
+<body>
+  <div id="app">
+    <!-- ===== 左侧世界存档 ===== -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h1 class="logo">VECTRA</h1>
+        <span class="logo-sub">NPC SIMULATION</span>
+      </div>
+      <div class="worlds-section">
+        <button id="btn-new-world" class="btn-new-world">＋ 新建世界</button>
+        <ul id="world-list"></ul>
+      </div>
+      <div class="sidebar-footer">
+        <div class="tars-status">
+          <span class="status-dot active"></span>
+          <span>TARS · 待命</span>
+          <span id="storage-indicator" class="storage-badge">💾 内存</span>
+          <button id="btn-storage" class="btn-icon-small" title="存储">📁</button>
+          <button id="btn-settings" class="btn-icon-small" title="API">⚙</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ===== 创世模式面板（播种者对话 + 右侧Tab） ===== -->
+    <main id="main-panel" class="panel-hidden">
+      <div class="phase-bar" id="phase-bar">
+        <div class="phase-step active" data-phase="1">① 世界设定书</div><span class="phase-arrow">→</span>
+        <div class="phase-step" data-phase="2">② 居民名册</div><span class="phase-arrow">→</span>
+        <div class="phase-step" data-phase="3">③ 往事蓝图</div><span class="phase-arrow">→</span>
+        <div class="phase-step" data-phase="4">④ 启动世界</div>
+      </div>
+      <div class="sower-bar">
+        <span class="sower-icon">✦</span>
+        <span class="sower-label">THE SOWER · 播种者</span>
+        <span class="sower-status">在线 · 聆听中</span>
+      </div>
+      <div id="chat-area"><div id="message-list"></div></div>
+      <div id="input-area">
+        <textarea id="chat-input" rows="2" placeholder="向播种者描述你的世界…"></textarea>
+        <div class="input-actions">
+          <button id="btn-confirm" class="btn-confirm" style="display:none;">✓ 确认定稿</button>
+          <button id="btn-send" class="send-btn">发送</button>
+        </div>
+      </div>
+    </main>
+
+    <!-- ===== 右侧功能Tab（创世模式） ===== -->
+    <aside id="right-panel" class="panel-hidden">
+      <nav class="tab-nav">
+        <button class="tab-btn active" data-tab="bible">📜 世界设定书</button>
+        <button class="tab-btn" data-tab="roster">🧑‍🌾 居民名册</button>
+        <button class="tab-btn" data-tab="quest">📖 往事蓝图</button>
+        <button class="tab-btn" data-tab="launch">🚀 启动世界</button>
+      </nav>
+      <div class="tab-content-area">
+        <section id="tab-bible" class="tab-content active"><div class="tab-header"><h2>📜 世界设定书</h2></div><div class="tab-body" id="bible-body"><div class="empty-state">等待创世加载…</div></div></section>
+        <section id="tab-roster" class="tab-content"><div class="tab-header"><h2>🧑‍🌾 居民名册</h2></div><div class="tab-body" id="roster-body"><div class="empty-state">尚无居民</div></div></section>
+        <section id="tab-quest" class="tab-content"><div class="tab-header"><h2>📖 往事蓝图</h2></div><div class="tab-body" id="quest-body"><div class="empty-state">尚无故事线</div></div></section>
+        <section id="tab-launch" class="tab-content"><div class="tab-header"><h2>🚀 启动世界</h2></div><div class="tab-body" id="launch-body"><div class="empty-state">请完成前三阶段设定</div></div></section>
+      </div>
+    </aside>
+
+    <!-- ===== 游玩模式面板（替代整个main+right） ===== -->
+    <div id="play-panel" class="panel-hidden">
+      <!-- 顶部全局状态栏 -->
+      <div id="play-topbar" class="play-topbar">
+        <div class="topbar-left">
+          <span id="pworld-name">世界名称</span><span class="sep">|</span>
+          <span id="pclock">📅 第1日 00:00</span><span class="sep">|</span>
+          <span id="pstatus" class="status-live">▶ LIVE</span>
+        </div>
+        <div class="topbar-right">
+          练度 <span id="plevel">Lv.1</span><span class="sep">|</span>
+          倍速
+          <button class="spd" data-s="0.5">0.5×</button>
+          <button class="spd active" data-s="1">1×</button>
+          <button class="spd" data-s="2">2×</button>
+          <button class="spd" data-s="5">5×</button>
+          <button id="btn-back-creation" class="back-btn" title="返回创世模式">← 创世</button>
+        </div>
+      </div>
+
+      <div id="play-body">
+        <!-- 左侧：居民列表 -->
+        <div class="pcol-left">
+          <div class="pcol-header">👥 居民</div>
+          <div id="pnpc-list"></div>
+        </div>
+
+        <!-- 中间：场景网格 / NPC对话 -->
+        <div class="pcol-center">
+          <div class="scene-top">
+            <span id="plocation">📍 世界地图</span>
+            <span id="pactive-npc"></span>
+          </div>
+          <div id="pscene" class="pscene">
+            <div class="scene-empty">点击居民或事件开始互动</div>
+          </div>
+        </div>
+
+        <!-- 右侧：事件日志 -->
+        <div class="pcol-right">
+          <div class="pcol-header">📋 世界事件</div>
+          <div id="pevents" class="pevents-list"></div>
+          <div class="play-input-row">
+            <textarea id="pinput" rows="2" placeholder="输入玩家行动指令…"></textarea>
+            <button id="psend" class="send-btn">SEND</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 模态框 ===== -->
+  <div id="modal-settings" class="modal-overlay" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-header"><h2>⚙ API 设置</h2><button class="modal-close" id="btn-settings-close">&times;</button></div>
+      <div class="modal-body">
+        <label class="field-label">API 端点</label><input type="text" id="settings-endpoint" class="field-input" placeholder="https://api.openai.com/v1">
+        <label class="field-label">API Key</label><input type="password" id="settings-key" class="field-input" placeholder="sk-...">
+        <label class="field-label">模型 ID</label><input type="text" id="settings-model" class="field-input" placeholder="gpt-4o / deepseek-chat">
+        <label class="field-label">Temperature</label>
+        <div class="range-row"><input type="range" id="settings-temp" min="0" max="2" step="0.1" value="0.8"><span id="settings-temp-val">0.8</span></div>
+        <label class="field-label">Max Tokens</label><input type="number" id="settings-maxtokens" class="field-input" value="4096">
+        <div class="field-hint">播种者与NPC世界系统将使用此配置调用 LLM。</div>
+      </div>
+      <div class="modal-footer"><button id="btn-settings-test" class="btn-test">测试连接</button><button id="btn-settings-save" class="btn-primary">保存</button></div>
+    </div>
+  </div>
+
+  <div id="modal-npc" class="modal-overlay" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-header"><h2>🧑‍🌾 新建 NPC</h2><button class="modal-close" id="btn-npc-close">&times;</button></div>
+      <div class="modal-body">
+        <label class="field-label">名称 *</label><input type="text" id="npc-name" class="field-input">
+        <label class="field-label">年龄 / 种族</label><input type="text" id="npc-age" class="field-input">
+        <label class="field-label">职业 / 身份</label><input type="text" id="npc-role" class="field-input">
+        <label class="field-label">性格简介</label><textarea id="npc-personality" class="field-textarea" rows="3"></textarea>
+        <label class="field-label">背景故事</label><textarea id="npc-backstory" class="field-textarea" rows="4"></textarea>
+      </div>
+      <div class="modal-footer"><button id="btn-npc-save" class="btn-primary">创建 NPC</button></div>
+    </div>
+  </div>
+
+  <div id="modal-quest" class="modal-overlay" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-header"><h2>📖 新建往事</h2><button class="modal-close" id="btn-quest-close">&times;</button></div>
+      <div class="modal-body">
+        <label class="field-label">节点类型</label>
+        <select id="quest-type" class="field-input"><option value="主线">📖 主线</option><option value="支线">🔀 支线</option><option value="对话">💬 对话</option><option value="调查">🔍 调查</option><option value="道具">🎒 道具</option><option value="好感">💕 好感变动</option></select>
+        <label class="field-label">事件名称 *</label><input type="text" id="quest-name" class="field-input">
+        <label class="field-label">事件描述</label><textarea id="quest-desc" class="field-textarea" rows="4"></textarea>
+      </div>
+      <div class="modal-footer"><button id="btn-quest-save" class="btn-primary">添加往事</button></div>
+    </div>
+  </div>
+
+  <div id="modal-memory" class="modal-overlay" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-header"><h2>🧠 记忆档案</h2><span id="memory-npc-label" style="font-size:12px;color:var(--text-muted);"></span><button class="modal-close" id="btn-memory-close">&times;</button></div>
+      <div class="modal-body">
+        <label class="field-label">📋 短期记忆（AI 上下文）</label><textarea id="memory-short" class="field-textarea" rows="4" placeholder="播种者会知道的近期事件…"></textarea>
+        <label class="field-label">📚 长期记忆（完整档案）</label><textarea id="memory-long" class="field-textarea" rows="8" placeholder="将持久化保存到文件。"></textarea>
+      </div>
+      <div class="modal-footer"><button id="btn-memory-save" class="btn-primary">保存记忆</button></div>
+    </div>
+  </div>
+
+  <script src="js/storage.js?v=5"></script>
+  <script src="js/app.js?v=5"></script>
+</body>
+</html>
