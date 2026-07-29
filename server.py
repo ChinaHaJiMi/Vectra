@@ -53,7 +53,7 @@ ALLOWED_ORIGINS = [
 # 路径名白名单
 VALID_ID_PATTERN = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 
-# ===== CSRF Token 管理 =====
+# ===== CSRF Token 管理（会话级：不消耗，持续有效期内可重复使用）=====
 class CsrfManager:
     def __init__(self):
         self._tokens = {}  # token -> expiry timestamp
@@ -72,8 +72,7 @@ class CsrfManager:
         now = time.time()
         expiry = self._tokens.get(token, 0)
         if expiry > now:
-            # 单次使用后立即删除
-            del self._tokens[token]
+            # 会话级 token：不消耗，在有效期内可重复使用
             return True
         return False
 
@@ -351,6 +350,8 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
         npcs = self._read_json_file(os.path.join(world_dir, 'npcs.json'))
         quests = self._read_json_file(os.path.join(world_dir, 'quests.json'))
         msgs = self._read_json_file(os.path.join(world_dir, 'conversations.json'))
+        play_events = self._read_json_file(os.path.join(world_dir, 'play_events.json'))
+        play_scene = self._read_json_file(os.path.join(world_dir, 'play_scene.json'))
         if meta:
             self._send_json({
                 "phase": meta.get("phase", 1),
@@ -358,6 +359,10 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
                 "npcs": npcs or [],
                 "quests": quests or [],
                 "messages": msgs or [],
+                "launched": meta.get("launched", False),
+                "playEvents": play_events or [],
+                "playScene": play_scene or [],
+                "playClock": meta.get("playClock", {"day": 1, "hour": 0, "minute": 0}),
                 "npcsConfirmed": meta.get("npcsConfirmed", False),
                 "questsConfirmed": meta.get("questsConfirmed", False),
             })
@@ -371,6 +376,8 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
         self._write_json_file(os.path.join(world_dir, 'meta.json'), {
             "phase": data.get("phase", 1),
             "bible": data.get("bible", {"lore": "", "laws": [], "era": ""}),
+            "launched": data.get("launched", False),
+            "playClock": data.get("playClock", {"day": 1, "hour": 0, "minute": 0}),
             "npcsConfirmed": data.get("npcsConfirmed", False),
             "questsConfirmed": data.get("questsConfirmed", False),
         })
@@ -381,6 +388,10 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
         if "messages" in data:
             recent = data["messages"][-50:]
             self._write_json_file(os.path.join(world_dir, 'conversations.json'), recent)
+        if "playEvents" in data:
+            self._write_json_file(os.path.join(world_dir, 'play_events.json'), data["playEvents"][-200:])
+        if "playScene" in data:
+            self._write_json_file(os.path.join(world_dir, 'play_scene.json'), data["playScene"][-100:])
         self._send_json({"ok": True})
 
     def _handle_delete_world(self, world_id):
@@ -414,13 +425,9 @@ if __name__ == '__main__':
     cert_file, key_file = ensure_self_signed_cert()
     if cert_file and key_file:
         try:
-            server.socket = ssl.wrap_socket(
-                server.socket,
-                certfile=cert_file,
-                keyfile=key_file,
-                server_side=True,
-                ssl_version=ssl.PROTOCOL_TLS_SERVER
-            )
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(cert_file, key_file)
+            server.socket = context.wrap_socket(server.socket, server_side=True)
             use_ssl = True
             logger.info(f"SSL/TLS 已启用（测试用自签名证书）")
         except Exception as e:

@@ -12,6 +12,8 @@ document.addEventListener('DOMContentLoaded', () => {
     worlds: [], currentWorld: null, phase: 1,
     bible: { lore: '', laws: [], era: '' },
     npcs: [], quests: [], messages: [],
+    // 用于给 NPC 分配初始位置的地点池
+    _locationPool: ['📍 酒馆', '📍 广场', '📍 集市', '📍 铁匠铺', '📍 教堂', '📍 港口', '📍 城堡', '📍 图书馆', '📍 花园', '📍 城墙'],
     settings: { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096 },
     launched: false,
     mode: 'creation',
@@ -148,6 +150,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (data.npcs) {
       for (const n of data.npcs) {
+        const idx = state.npcs.length;
         state.npcs.push({
           id: 'n' + Date.now() + Math.random().toString(36).slice(2,6),
           name: _sanitizeInput(n.name, 100) || '未命名',
@@ -155,7 +158,8 @@ document.addEventListener('DOMContentLoaded', () => {
           personality: _sanitizeInput(n.personality, 2000),
           age: _sanitizeInput(n.age, 50),
           backstory: _sanitizeInput(n.backstory, 5000),
-          icon: ['🧙','⚔️','🏹','🔮','🛡️','🧝','⛏️','📜'][state.npcs.length % 8],
+          icon: ['🧙','⚔️','🏹','🔮','🛡️','🧝','⛏️','📜'][idx % 8],
+          location: state._locationPool[idx % state._locationPool.length],
         });
       }
       c = true;
@@ -204,8 +208,15 @@ document.addEventListener('DOMContentLoaded', () => {
     isProcessing = false; el.btnSend.disabled = false; el.btnSend.textContent = '发送'; el.chatInput.focus();
   }
 
-  function advancePhase() {
-    if (state.phase < 4) { state.phase++; renderAll(); switchTab(['bible','roster','quest','launch'][state.phase-1]); storageSave(); }
+  function advancePhase(delta) {
+    if (delta === undefined) delta = 1;
+    const newPhase = state.phase + delta;
+    if (newPhase >= 1 && newPhase <= 4) {
+      state.phase = newPhase;
+      renderAll();
+      switchTab(['bible','roster','quest','launch'][state.phase-1]);
+      storageSave();
+    }
   }
 
   // ===== 切换模式 =====
@@ -303,20 +314,40 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ===== NPC AI 对话 =====
-  async function handlePlaySend() {
-    const text = _sanitizeInput(el.pinput.value.trim(), 5000);
-    if (!text) return;
-    el.pinput.value = '';
-    addSceneMsg('player', text);
-    addEvent('你: ' + text.slice(0, 50));
+  // ===== 消息解析与 NPC AI 对话 =====
+  // 语法：
+  //   普通文本          → 广播给所有在场 NPC
+  //   @NPC名 + 文本     → 仅对指定 NPC 说
+  //   /NPC名 方式 + 文  → 用特殊方式（短信/电话等）联系不在场的人
+  function _parseMessage(text) {
+    // 匹配 @名字 或 /名字 方式
+    const atMatch = text.match(/^@(\S+?)(?:\s|$)([\s\S]*)$/);
+    const slashMatch = text.match(/^\/(\S+?)\s+(\S+?)\s+([\s\S]*)$/);
+    
+    if (slashMatch) {
+      const targetName = _sanitizeInput(slashMatch[1].trim(), 50);
+      const method = _sanitizeInput(slashMatch[2].trim(), 50);
+      const msg = _sanitizeInput(slashMatch[3].trim(), 5000);
+      return { type: 'special', targetName, method, msg };
+    }
+    if (atMatch) {
+      const targetName = _sanitizeInput(atMatch[1].trim(), 50);
+      const msg = _sanitizeInput(atMatch[2].trim(), 5000);
+      return { type: 'direct', targetName, msg };
+    }
+    return { type: 'broadcast', msg: text };
+  }
 
-    if (state.play.activeNpc !== null) {
-      const npc = state.npcs[state.play.activeNpc];
-      const longMem = await vectraStorage.loadNPCMemory(state.currentWorld, npc.id) || '';
-      const shortMem = npc._shortMem || '';
+  async function _replyNpc(npc, userMsg, method) {
+    const longMem = await vectraStorage.loadNPCMemory(state.currentWorld, npc.id) || '';
+    const shortMem = npc._shortMem || '';
+    const nowClock = formatClock();
+    const npcLoc = npc.location || state.play.location;
 
-      const systemP = `## 世界背景
+    const methodHint = method ? `（对方通过${method}联系你）` : '（对方就在你面前）';
+    const locationHint = `你的位置：${npcLoc}`;
+
+    const systemP = `## 世界背景
 ${state.bible.lore || '一个普通的现代世界'}
 纪元：${state.bible.era || '当代'}
 
@@ -330,40 +361,100 @@ ${shortMem ? '最近发生的事：\n' + shortMem : '今天没什么特别的。
 ${longMem ? '\n你更久远的记忆：\n' + longMem : ''}
 
 ## 现在的场景
-${state.play.location}，${formatClock()}。
+当前时间：${nowClock}
+${locationHint}
 
 ## 扮演规则
 - 你就是${npc.name}，完完全全活在这个世界里的人
 - 用第一人称「我」说话，口语化、自然，别像念设定
-- 对面是来找你搭话的「你」——别把对方当成系统或玩家，就当是一个真实的人站在你面前
+${methodHint}
 - 你对自己的世界是熟悉的，对反常的事会觉得奇怪
 - 不知道的事就说不知道，别硬编
 - 字数控制在100字以内，一句话说完也行，不用每次都长篇大论
-- 不要提及你是AI、NPC或语言模型`;
+- 不要提及你是AI、NPC或语言模型
+- 注意当前时间${nowClock}，你是这个世界里活生生的人，时间不同你的状态和心情也会不同`;
 
-      const sceneContext = state.play.scene.slice(-10).map(s => `[${s.type}] ${s.content}`).join('\n');
+    const sceneContext = state.play.scene.slice(-10).map(s =>
+      `[${s.time || nowClock}][${s.type}] ${s.content}`
+    ).join('\n');
 
-      addSceneMsg('narrator', npc.name + ' 正在思考…');
+    addSceneMsg('narrator', npc.name + ' 正在思考…');
 
-      const reply = await callLLM([
-        { role: 'system', content: '以下是刚才发生的对话：\n' + sceneContext + '\n\n现在回应对方。' },
-        { role: 'user', content: text }
-      ], systemP);
+    const reply = await callLLM([
+      { role: 'system', content: '当前时间：' + nowClock + '\n\n以下是刚才发生的对话（带时间戳）：\n' + sceneContext + '\n\n现在回应对方。' },
+      { role: 'user', content: userMsg }
+    ], systemP);
 
-      state.play.scene = state.play.scene.filter(s => !s.content.includes('正在思考…'));
+    state.play.scene = state.play.scene.filter(s => !s.content.includes('正在思考…'));
 
-      const NPC_PREFIX = npc.name + '：';
-      const cleanReply = reply.replace(/^(你：|NPC：|)/, '').replace(NPC_PREFIX, '').trim();
-      addSceneMsg('npc', npc.name + '：' + cleanReply);
-      addEvent(npc.name + ' 回话了', npc.name);
+    const NPC_PREFIX = npc.name + '：';
+    const cleanReply = reply.replace(/^(你：|NPC：|)/, '').replace(NPC_PREFIX, '').trim();
+    const prefix = method ? `${npc.name}（${method}）：` : `${npc.name}：`;
+    addSceneMsg('npc', prefix + cleanReply);
+    addEvent(npc.name + (method ? `通过${method}` : '') + ' 回话了', npc.name);
 
-      const prevShort = npc._shortMem || '';
-      npc._shortMem = (prevShort ? prevShort + '\n' : '') + `[${formatClock()}] 有人跟你说: "${text.slice(0, 30)}"`;
-      if (npc._shortMem.length > 500) npc._shortMem = npc._shortMem.slice(-500);
-      storageSave();
-    } else {
-      addSceneMsg('narrator', '你看向四周——选个人说说话吧。点击左侧一位居民。');
+    const prevShort = npc._shortMem || '';
+    npc._shortMem = (prevShort ? prevShort + '\n' : '') + `[${formatClock()}] 有人跟你说: "${userMsg.slice(0, 30)}"`;
+    if (npc._shortMem.length > 500) npc._shortMem = npc._shortMem.slice(-500);
+    storageSave();
+  }
+
+  async function handlePlaySend() {
+    const raw = el.pinput.value.trim();
+    if (!raw) return;
+    el.pinput.value = '';
+
+    const parsed = _parseMessage(_sanitizeInput(raw, 5000));
+
+    if (parsed.type === 'broadcast') {
+      // 广播：对所有人说
+      addSceneMsg('player', parsed.msg);
+      addEvent('你: ' + parsed.msg.slice(0, 50));
+
+      if (state.npcs.length === 0) {
+        addSceneMsg('narrator', '四周静悄悄的，没有人在附近。');
+        return;
+      }
+
+      // 所有 NPC 依次回应
+      for (const npc of state.npcs) {
+        if (npc.online === false) continue;
+        await _replyNpc(npc, parsed.msg, null);
+      }
+
+    } else if (parsed.type === 'direct') {
+      // @NPC名：只对说话——不写入共享场景，只对目标 NPC 私下说
+      const npc = state.npcs.find(n => n.name === parsed.targetName);
+      if (!npc) {
+        addSceneMsg('player', raw);
+        addSceneMsg('narrator', `没有找到叫「${parsed.targetName}」的人。`);
+        addEvent('你尝试找 ' + parsed.targetName + ' 但没找到');
+        return;
+      }
+      // 显示"悄悄话"标记，但不写入 scene 数组（其他 NPC 看不到）
+      addSceneMsg('narrator', `💬 你对 ${npc.name} 悄悄说...`);
+      addEvent(`你对 ${npc.name} 说: ${parsed.msg.slice(0, 50)}`);
+      // 从场景中移除 narrtor 占位，用独立上下文调用
+      state.play.scene.pop();
+      await _replyNpc(npc, `[私聊] ${parsed.msg}`, '私聊');
+
+    } else if (parsed.type === 'special') {
+      // /名字 方式：特殊通信——只对目标 NPC
+      const npc = state.npcs.find(n => n.name === parsed.targetName);
+      if (!npc) {
+        addSceneMsg('player', raw);
+        addSceneMsg('narrator', `没有找到叫「${parsed.targetName}」的人。`);
+        addEvent('你尝试找 ' + parsed.targetName + ' 但没找到');
+        return;
+      }
+      // 不写入共享场景
+      addSceneMsg('narrator', `📡 你通过${parsed.method}联系 ${npc.name}...`);
+      addEvent(`你通过${parsed.method}联系 ${npc.name}: ${parsed.msg.slice(0, 50)}`);
+      state.play.scene.pop();
+      await _replyNpc(npc, `[${parsed.method}] ${parsed.msg}`, parsed.method);
     }
+
+    storageSave();
   }
 
   // ===== 时钟系统 =====
@@ -462,11 +553,17 @@ ${state.play.location}，${formatClock()}。
           <button class="btn-icon-tiny" data-action="edit-npc" data-idx="${i}" title="编辑">✎</button>
           <button class="btn-icon-tiny" data-action="del-npc" data-idx="${i}" title="删除">✕</button>
         </div>`).join('')}
+      <div style="margin-top:12px;display:flex;gap:6px;">
+        <button class="btn-confirm-manual" id="btn-confirm-roster" style="flex:1;">✓ 确认居民 · 进入下一阶段</button>
+        <button class="btn-secondary-tiny" id="btn-prev-roster">← 上一项</button>
+      </div>
     `;
     document.getElementById('btn-add-npc-top')?.addEventListener('click',()=>openNpcModal(null));
     el.rosterBody.querySelectorAll('[data-action="edit-npc"]').forEach(b=>b.addEventListener('click',()=>openNpcModal(parseInt(b.dataset.idx))));
     el.rosterBody.querySelectorAll('[data-action="del-npc"]').forEach(b=>b.addEventListener('click',()=>{if(confirm('删除NPC？')){state.npcs.splice(parseInt(b.dataset.idx),1);renderRoster();storageSave();}}));
     el.rosterBody.querySelectorAll('[data-action="mem-npc"]').forEach(b=>b.addEventListener('click',()=>openMemoryModal(parseInt(b.dataset.idx))));
+    document.getElementById('btn-confirm-roster')?.addEventListener('click',()=>{el.btnConfirm.style.display='none';addMessage('sower','✓ 居民名册已确认。');advancePhase();});
+    document.getElementById('btn-prev-roster')?.addEventListener('click',()=>{advancePhase(-1);switchTab('bible');});
   }
 
   function renderQuests() {
@@ -513,11 +610,14 @@ ${state.play.location}，${formatClock()}。
     el.storageIndicator.textContent = vectraStorage.label;
   }
 
+  // 阶段标签仅用于展示，不可点击跳转
   function switchTab(name) {
     el.tabBtns().forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
     el.tabContents().forEach(c=>c.classList.toggle('active',c.id==='tab-'+name));
   }
-  function initTabs() { el.tabBtns().forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab))); }
+  function initTabs() {
+    // 标签仅用于展示，不再绑定点击事件
+  }
 
   // ===== 模态框 =====
   let editingNpcIdx=null;
