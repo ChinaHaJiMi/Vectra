@@ -13,38 +13,33 @@ document.addEventListener('DOMContentLoaded', () => {
     bible: { lore: '', laws: [], era: '' },
     npcs: [], quests: [], messages: [],
     settings: { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096 },
-    launched: false,             // 世界是否已启动（锁定编辑 + 自动进入游玩）
-    mode: 'creation',            // 'creation' | 'play'
-    // 游玩模式状态
+    launched: false,
+    mode: 'creation',
     play: {
       clock: { day:1, hour:0, minute:0 },
       speed: 1,
       running: true,
-      events: [],                // 世界事件日志
-      scene: [],                 // 当前场景对话
-      activeNpc: null,           // 当前选中NPC索引
+      events: [],
+      scene: [],
+      activeNpc: null,
       location: '📍 世界地图',
     },
   };
 
   // ===== DOM 引用 =====
   const el = {
-    // 通用
     worldList: $('#world-list'), btnNewWorld: $('#btn-new-world'),
     btnSettings: $('#btn-settings'), btnStorage: $('#btn-storage'),
     storageIndicator: $('#storage-indicator'),
-    // 创世
     phaseSteps: () => $$('.phase-step'), msgList: $('#message-list'),
     chatInput: $('#chat-input'), btnSend: $('#btn-send'), btnConfirm: $('#btn-confirm'),
     bibleBody: $('#bible-body'), rosterBody: $('#roster-body'), questBody: $('#quest-body'), launchBody: $('#launch-body'),
     tabBtns: () => $$('.tab-btn'), tabContents: () => $$('.tab-content'), sowerStatus: $('.sower-status'),
-    // 游玩
     playPanel: $('#play-panel'), mainPanel: $('#main-panel'), rightPanel: $('#right-panel'),
     pworldName: $('#pworld-name'), pclock: $('#pclock'), pstatus: $('#pstatus'), plevel: $('#plevel'),
     pnpcList: $('#pnpc-list'), pscene: $('#pscene'), pevents: $('#pevents'),
     pinput: $('#pinput'), psend: $('#psend'), plocation: $('#plocation'), pactiveNpc: $('#pactive-npc'),
     spdBtns: () => $$('.spd'), backBtn: $('#btn-back-creation'),
-    // 模态框
     modalSettings: $('#modal-settings'), settingsEndpoint: $('#settings-endpoint'), settingsKey: $('#settings-key'),
     settingsModel: $('#settings-model'), settingsTemp: $('#settings-temp'), settingsTempVal: $('#settings-temp-val'),
     settingsMaxTokens: $('#settings-maxtokens'), btnSettingsTest: $('#btn-settings-test'), btnSettingsSave: $('#btn-settings-save'), btnSettingsClose: $('#btn-settings-close'),
@@ -90,21 +85,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function timestamp() { return new Date().toTimeString().slice(0, 8); }
 
+  // ===== 安全工具（使用 Sanitize 模块） =====
+  function _isSafeUrl(urlString) {
+    return Sanitize.url(urlString) !== null;
+  }
+
+  function _sanitizeInput(text, maxLen) {
+    return Sanitize.text(text, maxLen || 2000);
+  }
+
   // ===== 工具：LLM调用 =====
   async function callLLM(messages, systemExtra) {
     const s = state.settings;
     if (!s.key) return '⚠️ 未配置 API Key。';
     if (!s.model) return '⚠️ 未配置模型 ID。';
+    if (!_isSafeUrl(s.endpoint)) return '⚠️ API 端点地址不合法，请检查设置。';
     const msgs = [{ role: 'system', content: systemExtra || '' }, ...messages];
     try {
-      const res = await fetch((s.endpoint.replace(/\/+$/, '')) + '/chat/completions', {
+      const endpoint = s.endpoint.replace(/\/+$/, '');
+      const res = await fetch(endpoint + '/chat/completions', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + s.key },
         body: JSON.stringify({ model: s.model, messages: msgs, temperature: s.temperature, max_tokens: s.maxTokens }),
       });
-      if (!res.ok) { const e = await res.text(); return '❌ API 错误 (' + res.status + '): ' + e.slice(0,200); }
+      if (!res.ok) {
+        try { await res.text(); } catch (_) {}
+        return '❌ API 错误 (' + res.status + ')。';
+      }
       const data = await res.json();
       return data.choices?.[0]?.message?.content || '（没有回复）';
-    } catch(e) { return '❌ 网络错误: ' + e.message; }
+    } catch(e) { return '❌ 网络错误，请检查网络连接或 API 端点地址。'; }
   }
 
   // ===== 创世模式 =====
@@ -131,18 +140,51 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function applyDraft(data) {
     let c = false;
-    if (data.bible) { if (data.bible.lore) state.bible.lore = data.bible.lore; if (data.bible.laws) state.bible.laws = data.bible.laws; if (data.bible.era) state.bible.era = data.bible.era; c = true; }
-    if (data.npcs) { for (const n of data.npcs) state.npcs.push({ id:'n'+Date.now()+Math.random().toString(36).slice(2,6), name:n.name||'未命名', role:n.role||'', personality:n.personality||'', age:n.age||'', backstory:n.backstory||'', icon:['🧙','⚔️','🏹','🔮','🛡️','🧝','⛏️','📜'][state.npcs.length%8] }); c = true; }
-    if (data.quests) { for (const q of data.quests) state.quests.push({ id:'q'+Date.now()+Math.random().toString(36).slice(2,6), name:q.name||'未命名', type:q.type||'主线', desc:q.desc||'', time:timestamp() }); c = true; }
+    if (data.bible) {
+      if (data.bible.lore) state.bible.lore = _sanitizeInput(data.bible.lore, 50000);
+      if (data.bible.laws) state.bible.laws = data.bible.laws.map(l => _sanitizeInput(l, 2000)).filter(Boolean);
+      if (data.bible.era) state.bible.era = _sanitizeInput(data.bible.era, 2000);
+      c = true;
+    }
+    if (data.npcs) {
+      for (const n of data.npcs) {
+        state.npcs.push({
+          id: 'n' + Date.now() + Math.random().toString(36).slice(2,6),
+          name: _sanitizeInput(n.name, 100) || '未命名',
+          role: _sanitizeInput(n.role, 200),
+          personality: _sanitizeInput(n.personality, 2000),
+          age: _sanitizeInput(n.age, 50),
+          backstory: _sanitizeInput(n.backstory, 5000),
+          icon: ['🧙','⚔️','🏹','🔮','🛡️','🧝','⛏️','📜'][state.npcs.length % 8],
+        });
+      }
+      c = true;
+    }
+    if (data.quests) {
+      for (const q of data.quests) {
+        state.quests.push({
+          id: 'q' + Date.now() + Math.random().toString(36).slice(2,6),
+          name: _sanitizeInput(q.name, 200) || '未命名',
+          type: _sanitizeInput(q.type, 50) || '主线',
+          desc: _sanitizeInput(q.desc, 5000),
+          time: timestamp(),
+        });
+      }
+      c = true;
+    }
     if (c) { renderRightPanel(); storageSave(); el.btnConfirm.style.display = 'inline-block'; }
   }
 
-  function addMessage(type, content) { state.messages.push({ type, content }); renderMessages(); storageSave(); }
+  function addMessage(type, content) {
+    state.messages.push({ type, content: _sanitizeInput(content, 50000) });
+    renderMessages();
+    storageSave();
+  }
 
   let isProcessing = false;
   async function handleSend() {
     if (isProcessing) return;
-    const text = el.chatInput.value.trim();
+    const text = _sanitizeInput(el.chatInput.value.trim(), 5000);
     if (!text) return;
     el.chatInput.value = ''; addMessage('user', text);
     if (!state.settings.key || !state.settings.model) { addMessage('sower', '⚠️ 请配置 API Key 和模型。'); return; }
@@ -158,7 +200,7 @@ document.addEventListener('DOMContentLoaded', () => {
       else if (state.phase===2 && state.npcs.length>0) el.btnConfirm.style.display = 'inline-block';
       else if (state.phase===3 && state.quests.length>0) el.btnConfirm.style.display = 'inline-block';
       storageSave();
-    } catch(e) { addMessage('sower', '❌ 错误: ' + e.message); }
+    } catch(e) { addMessage('sower', '❌ 错误'); }
     isProcessing = false; el.btnSend.disabled = false; el.btnSend.textContent = '发送'; el.chatInput.focus();
   }
 
@@ -192,16 +234,14 @@ document.addEventListener('DOMContentLoaded', () => {
     el.pclock.textContent = formatClock();
     el.pstatus.textContent = state.play.running ? '▶ LIVE' : '⏸ PAUSED';
     el.pstatus.className = state.play.running ? 'status-live' : 'status-paused';
-    const npcCount = state.npcs.length;
-    const questCount = state.quests.length;
-    el.plevel.textContent = 'Lv.' + (npcCount + questCount + 1);
+    el.plevel.textContent = 'Lv.' + (state.npcs.length + state.quests.length + 1);
   }
 
   function renderNpcList() {
     el.pnpcList.innerHTML = state.npcs.map((n,i) =>
       `<div class="npc-play-item${state.play.activeNpc===i?' active':''}" data-idx="${i}">
         <span class="dot" style="background:${n.online!==false?'var(--green)':'var(--text-muted)'}"></span>
-        <span>${n.name}</span>
+        <span>${Sanitize.htmlEncode(n.name)}</span>
       </div>`
     ).join('');
     el.pnpcList.querySelectorAll('.npc-play-item').forEach(item => {
@@ -218,19 +258,19 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function addSceneMsg(type, content) {
-    state.play.scene.push({ type, content, time: formatClock() });
+    state.play.scene.push({ type, content: _sanitizeInput(content, 10000), time: formatClock() });
     renderScene();
   }
 
   function renderScene() {
     el.pscene.innerHTML = state.play.scene.length === 0
       ? '<div class="scene-empty">点击居民或事件开始互动</div>'
-      : state.play.scene.map(s => `<div class="scene-msg ${s.type}">${s.content}</div>`).join('');
+      : state.play.scene.map(s => `<div class="scene-msg ${s.type}">${Sanitize.htmlEncode(s.content)}</div>`).join('');
     el.pscene.scrollTop = el.pscene.scrollHeight;
   }
 
   function addEvent(desc, npcName) {
-    const entry = { time: formatClock(), desc, npc: npcName || '', id: Date.now() };
+    const entry = { time: formatClock(), desc: _sanitizeInput(desc, 2000), npc: _sanitizeInput(npcName||'', 100) || '', id: Date.now() };
     state.play.events.push(entry);
     renderEvents();
     storageSave();
@@ -239,11 +279,10 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderEvents() {
     el.pevents.innerHTML = state.play.events.slice(-100).reverse().map(e =>
       `<div class="event-entry" data-id="${e.id}">
-        <div class="etime">${e.time}${e.npc?' · '+e.npc:''}</div>
-        <div class="edesc">${e.desc}</div>
+        <div class="etime">${Sanitize.htmlEncode(e.time)}${e.npc?' · '+Sanitize.htmlEncode(e.npc):''}</div>
+        <div class="edesc">${Sanitize.htmlEncode(e.desc)}</div>
       </div>`
     ).join('');
-    // 点击事件加载到场景
     el.pevents.querySelectorAll('.event-entry').forEach(entry => {
       entry.addEventListener('click', () => {
         const desc = entry.querySelector('.edesc')?.textContent || '';
@@ -258,7 +297,6 @@ document.addEventListener('DOMContentLoaded', () => {
     renderNpcList();
     renderScene();
     renderEvents();
-    // 添加初始事件
     if (state.play.events.length === 0) {
       addEvent('世界已启动。冒险开始。');
       addSceneMsg('narrator', '世界在你面前展开。选择一位居民开始互动，或输入指令。');
@@ -267,7 +305,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ===== NPC AI 对话 =====
   async function handlePlaySend() {
-    const text = el.pinput.value.trim();
+    const text = _sanitizeInput(el.pinput.value.trim(), 5000);
     if (!text) return;
     el.pinput.value = '';
     addSceneMsg('player', text);
@@ -278,7 +316,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const longMem = await vectraStorage.loadNPCMemory(state.currentWorld, npc.id) || '';
       const shortMem = npc._shortMem || '';
 
-      // === 沉浸式 NPC 提示词 ===
       const systemP = `## 世界背景
 ${state.bible.lore || '一个普通的现代世界'}
 纪元：${state.bible.era || '当代'}
@@ -320,7 +357,6 @@ ${state.play.location}，${formatClock()}。
       addSceneMsg('npc', npc.name + '：' + cleanReply);
       addEvent(npc.name + ' 回话了', npc.name);
 
-      // 更新短期记忆
       const prevShort = npc._shortMem || '';
       npc._shortMem = (prevShort ? prevShort + '\n' : '') + `[${formatClock()}] 有人跟你说: "${text.slice(0, 30)}"`;
       if (npc._shortMem.length > 500) npc._shortMem = npc._shortMem.slice(-500);
@@ -353,14 +389,15 @@ ${state.play.location}，${formatClock()}。
   // ===== 渲染（创世） =====
   function renderMessages() {
     el.msgList.innerHTML = state.messages.map((m,i) =>
-      `<div class="message ${m.type}">${m.content.replace(/\n/g,'<br>')}
+      `<div class="message ${m.type}">${Sanitize.htmlEncode(m.content).replace(/\n/g,'<br>')}
         ${m.type==='sower'?`<button class="msg-edit-btn" data-idx="${i}" title="编辑">✎</button>`:''}
       </div>`
     ).join('');
     el.msgList.scrollTop = el.msgList.scrollHeight;
     el.msgList.querySelectorAll('.msg-edit-btn').forEach(b=>b.addEventListener('click',()=>{
-      const idx=parseInt(b.dataset.idx); const nc=prompt('编辑：',state.messages[idx].content);
-      if(nc!==null){state.messages[idx].content=nc;renderMessages();storageSave();}
+      const idx=parseInt(b.dataset.idx);
+      const nc=prompt('编辑：',state.messages[idx].content);
+      if(nc!==null){state.messages[idx].content=_sanitizeInput(nc,50000);renderMessages();storageSave();}
     }));
   }
 
@@ -368,7 +405,7 @@ ${state.play.location}，${formatClock()}。
     if (state.worlds.length===0) { el.worldList.innerHTML=''; return; }
     el.worldList.innerHTML = state.worlds.map(w =>
       `<li class="world-item${w.id===state.currentWorld?' active':''}" data-id="${w.id}">
-        <span class="world-item-name">${w.name}</span>
+        <span class="world-item-name">${Sanitize.htmlEncode(w.name)}</span>
         <button class="world-del-btn" data-id="${w.id}" title="删除">✕</button>
       </li>`
     ).join('');
@@ -395,23 +432,23 @@ ${state.play.location}，${formatClock()}。
     el.bibleBody.innerHTML=`
       <div style="margin-bottom:8px;font-size:11px;color:var(--text-muted);">在下方直接编写世界设定，或通过播种者对话生成。</div>
       <div class="editable-section"><div class="editable-header"><h4 style="font-size:12px;color:var(--cyan);letter-spacing:1px;">🌍 世界观</h4><button class="btn-edit-sm" data-edit="lore">✎ 编辑</button></div>
-        <div class="editable-view" id="view-lore"><p style="font-size:13px;color:var(--text-secondary);line-height:1.6;white-space:pre-wrap;">${b.lore||'（空）'}</p></div>
-        <div class="editable-edit" id="edit-lore" style="display:none;"><textarea class="inline-editor">${b.lore}</textarea><div class="inline-actions"><button class="btn-primary-tiny" data-save="lore">保存</button><button class="btn-cancel-tiny" data-cancel="lore">取消</button></div></div>
+        <div class="editable-view" id="view-lore"><p style="font-size:13px;color:var(--text-secondary);line-height:1.6;white-space:pre-wrap;">${Sanitize.htmlEncode(b.lore)||'（空）'}</p></div>
+        <div class="editable-edit" id="edit-lore" style="display:none;"><textarea class="inline-editor">${Sanitize.htmlEncode(b.lore)}</textarea><div class="inline-actions"><button class="btn-primary-tiny" data-save="lore">保存</button><button class="btn-cancel-tiny" data-cancel="lore">取消</button></div></div>
       </div>
       <div class="editable-section"><div class="editable-header"><h4 style="font-size:12px;color:var(--cyan);letter-spacing:1px;">⚖️ 法则</h4><button class="btn-edit-sm" data-edit="laws">✎ 编辑</button></div>
-        <div class="editable-view" id="view-laws">${b.laws.length?`<ul style="list-style:none;">${b.laws.map(l=>`<li style="font-size:13px;color:var(--text-secondary);padding:3px 0 3px 10px;border-left:2px solid var(--border-color);margin-bottom:3px;">${l}</li>`).join('')}</ul>`:'<span style="font-size:13px;color:var(--text-muted);">尚无法则</span>'}</div>
-        <div class="editable-edit" id="edit-laws" style="display:none;"><textarea class="inline-editor" rows="4" placeholder="每行一条法则">${b.laws.join('\n')}</textarea><div class="inline-actions"><button class="btn-primary-tiny" data-save="laws">保存</button><button class="btn-cancel-tiny" data-cancel="laws">取消</button></div></div>
+        <div class="editable-view" id="view-laws">${b.laws.length?`<ul style="list-style:none;">${b.laws.map(l=>`<li style="font-size:13px;color:var(--text-secondary);padding:3px 0 3px 10px;border-left:2px solid var(--border-color);margin-bottom:3px;">${Sanitize.htmlEncode(l)}</li>`).join('')}</ul>`:'<span style="font-size:13px;color:var(--text-muted);">尚无法则</span>'}</div>
+        <div class="editable-edit" id="edit-laws" style="display:none;"><textarea class="inline-editor" rows="4" placeholder="每行一条法则">${b.laws.map(l=>Sanitize.htmlEncode(l)).join('\n')}</textarea><div class="inline-actions"><button class="btn-primary-tiny" data-save="laws">保存</button><button class="btn-cancel-tiny" data-cancel="laws">取消</button></div></div>
       </div>
       <div class="editable-section"><div class="editable-header"><h4 style="font-size:12px;color:var(--cyan);letter-spacing:1px;">📅 纪元</h4><button class="btn-edit-sm" data-edit="era">✎ 编辑</button></div>
-        <div class="editable-view" id="view-era"><p style="font-size:13px;color:var(--text-secondary);">${b.era||'未设定'}</p></div>
-        <div class="editable-edit" id="edit-era" style="display:none;"><textarea class="inline-editor" rows="1">${b.era||''}</textarea><div class="inline-actions"><button class="btn-primary-tiny" data-save="era">保存</button><button class="btn-cancel-tiny" data-cancel="era">取消</button></div></div>
+        <div class="editable-view" id="view-era"><p style="font-size:13px;color:var(--text-secondary);">${Sanitize.htmlEncode(b.era)||'未设定'}</p></div>
+        <div class="editable-edit" id="edit-era" style="display:none;"><textarea class="inline-editor" rows="1">${Sanitize.htmlEncode(b.era||'')}</textarea><div class="inline-actions"><button class="btn-primary-tiny" data-save="era">保存</button><button class="btn-cancel-tiny" data-cancel="era">取消</button></div></div>
       </div>
       <button class="btn-confirm-manual" id="btn-confirm-bible">✓ 手动定稿 · 进入下一阶段</button>
     `;
     const cb=document.getElementById('btn-confirm-bible');
     if(cb)cb.addEventListener('click',()=>{el.btnConfirm.style.display='none';addMessage('sower','✓ 世界设定已确认。');advancePhase();});
     el.bibleBody.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click',()=>{const f=b.dataset.edit;document.getElementById('view-'+f).style.display='none';document.getElementById('edit-'+f).style.display='block';}));
-    el.bibleBody.querySelectorAll('[data-save]').forEach(b=>b.addEventListener('click',()=>{const f=b.dataset.save;const ta=document.querySelector('#edit-'+f+' .inline-editor');const v=ta.value;if(f==='lore')state.bible.lore=v;else if(f==='era')state.bible.era=v;else if(f==='laws')state.bible.laws=v.split('\n').filter(s=>s.trim()).map(s=>s.trim());storageSave();renderBible();}));
+    el.bibleBody.querySelectorAll('[data-save]').forEach(b=>b.addEventListener('click',()=>{const f=b.dataset.save;const ta=document.querySelector('#edit-'+f+' .inline-editor');let v=ta.value;v=_sanitizeInput(v,50000);if(f==='lore')state.bible.lore=v;else if(f==='era')state.bible.era=v;else if(f==='laws')state.bible.laws=v.split('\n').filter(s=>s.trim()).map(s=>_sanitizeInput(s.trim(),2000));storageSave();renderBible();}));
     el.bibleBody.querySelectorAll('[data-cancel]').forEach(b=>b.addEventListener('click',()=>{const f=b.dataset.cancel;document.getElementById('view-'+f).style.display='block';document.getElementById('edit-'+f).style.display='none';}));
   }
 
@@ -420,7 +457,7 @@ ${state.play.location}，${formatClock()}。
     el.rosterBody.innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-size:12px;color:var(--text-muted);">总计 ${state.npcs.length} 位NPC</span><button id="btn-add-npc-top" class="btn-add-sm">+ 创建</button></div>
       ${state.npcs.map((n,i)=>`
-        <div class="npc-card"><div class="avatar">${n.icon||'🧑'}</div><div class="info"><div class="name">${n.name}</div><div class="detail">${[n.age,n.role].filter(Boolean).join(' · ')}</div></div>
+        <div class="npc-card"><div class="avatar">${n.icon||'🧑'}</div><div class="info"><div class="name">${Sanitize.htmlEncode(n.name)}</div><div class="detail">${Sanitize.htmlEncode([n.age,n.role].filter(Boolean).join(' · '))}</div></div>
           <button class="btn-icon-tiny" data-action="mem-npc" data-idx="${i}" title="记忆">🧠</button>
           <button class="btn-icon-tiny" data-action="edit-npc" data-idx="${i}" title="编辑">✎</button>
           <button class="btn-icon-tiny" data-action="del-npc" data-idx="${i}" title="删除">✕</button>
@@ -434,9 +471,9 @@ ${state.play.location}，${formatClock()}。
 
   function renderQuests() {
     const qh = state.quests.length>0?state.quests.map((q,i)=>`
-      <div class="quest-node"><div style="display:flex;justify-content:space-between;"><div><span class="node-type">${q.type||'📖 往事'}</span><div style="font-size:13px;font-weight:500;margin-top:2px;">${q.name}</div></div>
+      <div class="quest-node"><div style="display:flex;justify-content:space-between;"><div><span class="node-type">${Sanitize.htmlEncode(q.type||'📖 往事')}</span><div style="font-size:13px;font-weight:500;margin-top:2px;">${Sanitize.htmlEncode(q.name)}</div></div>
         <div style="display:flex;gap:4px;"><button class="btn-icon-tiny" data-action="edit-quest" data-idx="${i}" title="编辑">✎</button><button class="btn-icon-tiny" data-action="del-quest" data-idx="${i}" title="删除">✕</button></div></div>
-        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">${q.desc||''}</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">${Sanitize.htmlEncode(q.desc||'')}</div>
       </div>`).join(''):'<div class="empty-state" style="padding:12px;">尚无故事线</div>';
     el.questBody.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-size:12px;color:var(--text-muted);">${state.quests.length} 条往事</span><button id="btn-add-quest-top" class="btn-add-sm">+ 新建</button></div>${qh}<button class="btn-confirm-manual" id="btn-confirm-quest">✓ 确认故事线 · 进入下一阶段</button>`;
     document.getElementById('btn-confirm-quest')?.addEventListener('click',()=>{el.btnConfirm.style.display='none';addMessage('sower','✓ 往事蓝图已确认。');advancePhase();});
@@ -449,8 +486,8 @@ ${state.play.location}，${formatClock()}。
     const ready=state.phase>=4;
     el.launchBody.innerHTML=ready?`
       <div class="launch-card"><div class="status-badge ready">✓ 世界已就绪</div>
-        <div style="font-size:16px;font-weight:600;margin-bottom:8px;">序章：${state.bible.era||'新纪元'}</div>
-        <div class="prologue">${state.bible.lore||'世界等待你的探索…'}</div>
+        <div style="font-size:16px;font-weight:600;margin-bottom:8px;">序章：${Sanitize.htmlEncode(state.bible.era||'新纪元')}</div>
+        <div class="prologue">${Sanitize.htmlEncode(state.bible.lore||'世界等待你的探索…')}</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">${state.npcs.length} 位居民 · ${state.quests.length} 条往事</div>
         ${state.launched
         ? '<div class="status-badge ready" style="margin-bottom:12px;">▶ 世界运行中</div>'
@@ -494,8 +531,15 @@ ${state.play.location}，${formatClock()}。
   }
   function closeNpcModal(){el.modalNpc.style.display='none';editingNpcIdx=null;}
   el.btnNpcSave.addEventListener('click',()=>{
-    const name=el.npcName.value.trim();if(!name){alert('请输入名称');return;}
-    const npc={id:'n'+Date.now(),name,age:el.npcAge.value.trim(),role:el.npcRole.value.trim(),personality:el.npcPersonality.value.trim(),backstory:el.npcBackstory.value.trim(),icon:['🧙','⚔️','🏹','🔮','🛡️','🧝','⛏️','📜'][state.npcs.length%8]};
+    const name=_sanitizeInput(el.npcName.value.trim(),100);if(!name){alert('请输入名称');return;}
+    const npc={
+      id:'n'+Date.now(),
+      name,
+      age:_sanitizeInput(el.npcAge.value.trim(),50),
+      role:_sanitizeInput(el.npcRole.value.trim(),200),
+      personality:_sanitizeInput(el.npcPersonality.value.trim(),2000),
+      backstory:_sanitizeInput(el.npcBackstory.value.trim(),5000),
+      icon:['🧙','⚔️','🏹','🔮','🛡️','🧝','⛏️','📜'][state.npcs.length%8]};
     if(editingNpcIdx!==null)Object.assign(state.npcs[editingNpcIdx],npc);else state.npcs.push(npc);
     closeNpcModal();renderRoster();addMessage('sower','🧑‍🌾 NPC「'+npc.name+'」'+(editingNpcIdx!==null?'已更新':'已创建')+'。');storageSave();
   });
@@ -512,8 +556,8 @@ ${state.play.location}，${formatClock()}。
   }
   function closeQuestModal(){el.modalQuest.style.display='none';editingQuestIdx=null;}
   el.btnQuestSave.addEventListener('click',()=>{
-    const name=el.questName.value.trim();if(!name){alert('请输入名称');return;}
-    const quest={id:'q'+Date.now(),name,type:el.questType.value,desc:el.questDesc.value.trim(),time:timestamp()};
+    const name=_sanitizeInput(el.questName.value.trim(),200);if(!name){alert('请输入名称');return;}
+    const quest={id:'q'+Date.now(),name,type:_sanitizeInput(el.questType.value,50),desc:_sanitizeInput(el.questDesc.value.trim(),5000),time:timestamp()};
     if(editingQuestIdx!==null)Object.assign(state.quests[editingQuestIdx],quest);else state.quests.push(quest);
     closeQuestModal();renderQuests();addMessage('sower','📖 往事「'+quest.name+'」'+(editingQuestIdx!==null?'已更新':'已添加')+'。');storageSave();
   });
@@ -529,8 +573,8 @@ ${state.play.location}，${formatClock()}。
   }
   el.btnMemorySave.addEventListener('click',async()=>{
     if(memoryNpcIdx===null)return;const n=state.npcs[memoryNpcIdx];
-    n._shortMem=el.memoryShort.value.trim();
-    const longText=el.memoryLong.value.trim();
+    n._shortMem=_sanitizeInput(el.memoryShort.value.trim(),5000);
+    const longText=_sanitizeInput(el.memoryLong.value.trim(),50000);
     if(longText)await vectraStorage.saveNPCMemory(state.currentWorld,n.id,longText);
     el.modalMemory.style.display='none';addMessage('sower','🧠 NPC「'+n.name+'」记忆已保存。');storageSave();
   });
@@ -549,14 +593,22 @@ ${state.play.location}，${formatClock()}。
   el.btnSettingsTest.addEventListener('click',async()=>{
     const ep=el.settingsEndpoint.value.trim().replace(/\/+$/,'');const key=el.settingsKey.value.trim();const model=el.settingsModel.value;
     if(!key){alert('请填写 Key');return;}
+    if(!_isSafeUrl(ep)){alert('⚠️ API 端点地址不合法，不允许连接内网地址。');return;}
     el.btnSettingsTest.textContent='测试中…';el.btnSettingsTest.disabled=true;
     try{const res=await fetch(ep+'/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},body:JSON.stringify({model,messages:[{role:'user',content:'ping'}],max_tokens:5})});
-      if(res.ok)alert('✅ 连接成功！');else{const e=await res.text();alert('❌ 失败 ('+res.status+'): '+e.slice(0,200));}}
-    catch(e){alert('❌ 网络错误: '+e.message);}
+      if(res.ok)alert('✅ 连接成功！');else{const e=await res.text();alert('❌ 失败 ('+res.status+')');}}
+    catch(e){alert('❌ 网络错误，请检查网络连接或 API 端点地址。');}
     el.btnSettingsTest.textContent='测试连接';el.btnSettingsTest.disabled=false;
   });
   el.btnSettingsSave.addEventListener('click',()=>{
-    state.settings={endpoint:el.settingsEndpoint.value.trim().replace(/\/+$/,''),key:el.settingsKey.value.trim(),model:el.settingsModel.value,temperature:parseFloat(el.settingsTemp.value),maxTokens:parseInt(el.settingsMaxTokens.value)||4096};
+    const rawEndpoint=el.settingsEndpoint.value.trim().replace(/\/+$/,'');
+    state.settings={
+      endpoint: _sanitizeInput(rawEndpoint, 500),
+      key: el.settingsKey.value.trim(),
+      model: _sanitizeInput(el.settingsModel.value.trim(), 200),
+      temperature: parseFloat(el.settingsTemp.value) || 0.8,
+      maxTokens: parseInt(el.settingsMaxTokens.value) || 4096,
+    };
     vectraStorage.saveSettings(state.settings);closeSettingsModal();addMessage('sower','⚙ API 设置已保存。');
   });
 
@@ -590,7 +642,6 @@ ${state.play.location}，${formatClock()}。
     state.mode = 'creation';
     updatePanelVisibility();
     if (clockInterval) clearInterval(clockInterval);
-    // 如果世界已启动，右侧栏显示只读状态
     if (state.launched) {
       el.mainPanel.classList.add('panel-hidden');
       el.rightPanel.classList.add('panel-hidden');
@@ -603,7 +654,9 @@ ${state.play.location}，${formatClock()}。
   async function handleNewWorld() {
     const name = prompt('输入新世界名称：');
     if (!name || !name.trim()) return;
-    const world = { id:'w'+Date.now(), name: name.trim() };
+    const cleanName = _sanitizeInput(name.trim(), 100);
+    if (!cleanName) return;
+    const world = { id:'w'+Date.now(), name: cleanName };
     state.worlds.push(world); state.currentWorld = world.id;
     state.phase = 1; state.bible = { lore:'', laws:[], era:'' }; state.npcs = []; state.quests = []; state.messages = [];
     state.launched = false;
@@ -625,7 +678,6 @@ ${state.play.location}，${formatClock()}。
       await storageSave();
       state.currentWorld = id; await storageLoadWorld(id);
       if (state.launched) {
-        // 已启动的世界 → 自动进入游玩模式
         if (state.messages.length===0) addMessage('sower', '已切换到世界「'+(item.querySelector('.world-item-name')?.textContent||'')+'」。');
         el.btnConfirm.style.display = 'none';
         switchMode('play');
@@ -648,14 +700,12 @@ ${state.play.location}，${formatClock()}。
     state.settings = vectraStorage.loadSettings();
     if (state.currentWorld) {
       await storageLoadWorld(state.currentWorld);
-      // 已启动的世界自动进入游玩模式
       if (state.launched) {
         state.mode = 'play';
       }
     }
 
     renderAll(); initTabs(); initWorldSwitch();
-    // 自动进入游玩模式（延时确保 DOM 渲染完成）
     if (state.launched && state.mode === 'play') {
       el.mainPanel.classList.add('panel-hidden');
       el.rightPanel.classList.add('panel-hidden');
@@ -663,13 +713,12 @@ ${state.play.location}，${formatClock()}。
       renderPlayMode();
       startClock();
     }
-    // 如果世界已启动，禁用播种者对话
-  if (state.launched) {
-    el.chatInput.disabled = true;
-    el.btnSend.disabled = true;
-    el.sowerStatus.textContent = '🔒 世界运行中 · 创世已锁定';
-  }
-  el.btnSend.addEventListener('click', handleSend);
+    if (state.launched) {
+      el.chatInput.disabled = true;
+      el.btnSend.disabled = true;
+      el.sowerStatus.textContent = '🔒 世界运行中 · 创世已锁定';
+    }
+    el.btnSend.addEventListener('click', handleSend);
     el.chatInput.addEventListener('keydown', (e) => { if (e.key==='Enter'&&!e.shiftKey) { e.preventDefault(); handleSend(); } });
     el.btnNewWorld.addEventListener('click', handleNewWorld);
 

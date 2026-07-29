@@ -8,11 +8,54 @@ class VectraStorage {
   constructor() {
     this.mode = 'memory';  // 'server' | 'localStorage' | 'memory'
     this._base = '';
+    this._csrfToken = null;
   }
 
   get label() {
     return this.mode === 'server' ? '📁 文件' :
            this.mode === 'localStorage' ? '💾 本地' : '💾 内存';
+  }
+
+  // 简单的 XOR + Base64 混淆（非真正加密，但避免明文直接暴露）
+  _obfuscate(text) {
+    if (!text) return '';
+    const key = 'v3ctr4@2024!';
+    let result = '';
+    for (let i = 0; i < text.length; i++) {
+      result += String.fromCharCode(text.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+    }
+    return btoa(unescape(encodeURIComponent(result)));
+  }
+
+  _deobfuscate(obfuscated) {
+    if (!obfuscated) return '';
+    try {
+      const decoded = decodeURIComponent(escape(atob(obfuscated)));
+      const key = 'v3ctr4@2024!';
+      let result = '';
+      for (let i = 0; i < decoded.length; i++) {
+        result += String.fromCharCode(decoded.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+      }
+      return result;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  // 获取 CSRF Token（从服务器获取）
+  async _ensureCsrfToken() {
+    if (this._csrfToken) return this._csrfToken;
+    if (this.mode === 'server') {
+      try {
+        const res = await fetch(`${this._base}/api/csrf-token`);
+        if (res.ok) {
+          const d = await res.json();
+          this._csrfToken = d.token;
+          return this._csrfToken;
+        }
+      } catch (_) {}
+    }
+    return null;
   }
 
   // 检测后端 server.py
@@ -35,7 +78,17 @@ class VectraStorage {
   }
 
   async _api(method, path, body) {
-    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    const opts = {
+      method,
+      headers: { 'Content-Type': 'application/json' }
+    };
+    // 非 GET 请求附加 CSRF Token
+    if (method !== 'GET') {
+      const token = await this._ensureCsrfToken();
+      if (token) {
+        opts.headers['X-CSRF-Token'] = token;
+      }
+    }
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch(`${this._base}${path}`, opts);
     return await res.json();
@@ -117,15 +170,25 @@ class VectraStorage {
     } catch (_) { return ''; }
   }
 
-  // ===== API 设置 =====
+  // ===== API 设置（含 Key 混淆） =====
   saveSettings(s) {
-    localStorage.setItem('vectra_settings', JSON.stringify(s));
+    const store = { ...s };
+    if (store.key) {
+      store.key = this._obfuscate(store.key);
+    }
+    localStorage.setItem('vectra_settings', JSON.stringify(store));
   }
 
   loadSettings() {
     try {
       const r = localStorage.getItem('vectra_settings');
-      if (r) return JSON.parse(r);
+      if (r) {
+        const s = JSON.parse(r);
+        if (s.key) {
+          s.key = this._deobfuscate(s.key) || s.key;
+        }
+        return s;
+      }
     } catch (_) {}
     return { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096 };
   }
