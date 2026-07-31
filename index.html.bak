@@ -24,7 +24,6 @@
           <span>TARS · 待命</span>
           <span id="storage-indicator" class="storage-badge">💾 内存</span>
           <button id="btn-storage" class="btn-icon-small" title="存储">📁</button>
-          <button id="btn-appearance" class="btn-icon-small" title="个性化">🎨</button>
           <button id="btn-settings" class="btn-icon-small" title="API">⚙</button>
         </div>
       </div>
@@ -172,89 +171,6 @@
         <label class="field-label">📚 长期记忆（完整档案）</label><textarea id="memory-long" class="field-textarea" rows="8" placeholder="将持久化保存到文件。"></textarea>
       </div>
       <div class="modal-footer"><button id="btn-memory-save" class="btn-primary">保存记忆</button></div>
-    </div>
-  </div>
-
-  <!-- ===== 个性化设置模态框 ===== -->
-  <div id="modal-appearance" class="modal-overlay" style="display:none;">
-    <div class="modal-box">
-      <div class="modal-header"><h2>🎨 个性化设置</h2><button class="modal-close" id="btn-appearance-close">&times;</button></div>
-      <div class="modal-body">
-        <label class="field-label">🎯 背景主题</label>
-        <div class="theme-preview-grid" id="theme-grid">
-          <div class="theme-preset active" data-theme="dark"><span class="preset-label">暗黑</span></div>
-          <div class="theme-preset" data-theme="cyberpunk"><span class="preset-label">赛博朋克</span></div>
-          <div class="theme-preset" data-theme="forest"><span class="preset-label">森境</span></div>
-          <div class="theme-preset" data-theme="ocean"><span class="preset-label">深海</span></div>
-          <div class="theme-preset" data-theme="sunset"><span class="preset-label">落日</span></div>
-          <div class="theme-preset" data-theme="matrix"><span class="preset-label">矩阵</span></div>
-        </div>
-        <div style="border-top:1px solid var(--border-color);margin:8px 0;"></div>
-
-        <label class="field-label">🖼️ 自定义背景图</label>
-        <div class="bg-upload-area" id="bg-upload-area">
-          <div style="font-size:13px;color:var(--text-secondary);">点击选择图片</div>
-          <div class="hint">支持 JPG / PNG，将作为页面背景</div>
-          <canvas id="bg-preview-canvas" class="bg-preview-thumb" style="display:none;"></canvas>
-        </div>
-        <input type="file" id="bg-file-input" accept="image/*" style="display:none;">
-        <button id="btn-bg-clear" class="btn-test" style="width:100%;margin-top:6px;display:none;">清除背景图</button>
-
-        <div style="border-top:1px solid var(--border-color);margin:8px 0;"></div>
-
-        <label class="field-label">🪟 磨砂玻璃效果</label>
-        <div class="glass-toggle-row">
-          <label>启用磨砂玻璃</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="glass-enabled">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="glass-toggle-row">
-          <label>玻璃透明度</label>
-          <input type="range" id="glass-opacity" min="0.3" max="0.9" step="0.05" value="0.65">
-          <span class="val" id="glass-opacity-val">0.65</span>
-        </div>
-        <div class="glass-toggle-row">
-          <label>模糊强度</label>
-          <input type="range" id="glass-blur" min="4" max="30" step="2" value="12">
-          <span class="val" id="glass-blur-val">12px</span>
-        </div>
-        <div class="glass-toggle-row">
-          <label>玻璃应用到侧栏/面板</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="glass-panels" checked>
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="glass-toggle-row">
-          <label>玻璃应用到按钮</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="glass-buttons" checked>
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="glass-toggle-row">
-          <label>玻璃应用到模态框</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="glass-modals" checked>
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-
-        <div style="border-top:1px solid var(--border-color);margin:8px 0;"></div>
-
-        <label class="field-label">🔆 叠加层透明度</label>
-        <div class="glass-toggle-row">
-          <label>背景图片上叠加遮罩强度</label>
-          <input type="range" id="bg-overlay-opacity" min="0.3" max="1.0" step="0.05" value="0.85">
-          <span class="val" id="bg-overlay-opacity-val">0.85</span>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button id="btn-appearance-reset" class="btn-test">重置为默认</button>
-        <button id="btn-appearance-save" class="btn-primary">保存设置</button>
-      </div>
     </div>
   </div>
 
