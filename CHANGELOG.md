@@ -8,6 +8,12 @@ All notable changes to VECTRA will be documented in this file.
 - NPC 关系图谱可视化
 - 多 NPC 同时在线对话
 - 场景地图/网格编辑器
+- 一键安装发行版脚本（Windows `install.bat` / Linux·macOS `install.sh`）
+- 服务器支持 `VECTRA_NO_SSL=1`（HTTP 直连）与 `VECTRA_PORT` 环境变量
+
+### Changed
+- 默认桌面启动方式改为 HTTP 直连，浏览器无自签名证书警告
+- 移除仓库内 `.bak` / `.cph` / gitleaks 报告等垃圾文件
 
 ## [1.0.0] — 2024-07-23
 

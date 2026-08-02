@@ -9,6 +9,18 @@ Thumbs.db
 *.swo
 *~
 
+# 备份/临时文件
+*.bak
+.cph/
+gitleaks-report-final.json
+
+# 安装器运行时文件
+run-vectra.*
+.vectra_launch_count
+
+# 发行构建产物
+release/
+
 # 日志文件
 *.log
 

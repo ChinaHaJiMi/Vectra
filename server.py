@@ -22,7 +22,9 @@ from datetime import datetime
 from pathlib import Path
 
 # === 配置 ===
-PORT = 8080
+# 环境变量可覆盖:VECTRA_PORT(端口) / VECTRA_NO_SSL=1(禁用 HTTPS)
+PORT = int(os.environ.get("VECTRA_PORT", "8080"))
+VECTRA_NO_SSL = os.environ.get("VECTRA_NO_SSL", "") == "1"
 DATA_DIR = os.path.join(os.path.expanduser("~"), "VectraData")
 CERT_DIR = os.path.join(DATA_DIR, "certs")
 RATE_LIMIT_PER_MINUTE = 60
@@ -420,18 +422,20 @@ if __name__ == '__main__':
 
     server = http.server.HTTPServer(('127.0.0.1', PORT), VectraHTTPHandler)
 
-    # 尝试启用 SSL/TLS
+    # 尝试启用 SSL/TLS（默认开启；VECTRA_NO_SSL=1 时禁用，HTTP 直连）
     use_ssl = False
-    cert_file, key_file = ensure_self_signed_cert()
-    if cert_file and key_file:
-        try:
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            context.load_cert_chain(cert_file, key_file)
-            server.socket = context.wrap_socket(server.socket, server_side=True)
-            use_ssl = True
-            logger.info(f"SSL/TLS 已启用（测试用自签名证书）")
-        except Exception as e:
-            logger.warning(f"SSL 启用失败，回退到 HTTP: {e}")
+    cert_file = key_file = None
+    if not VECTRA_NO_SSL:
+        cert_file, key_file = ensure_self_signed_cert()
+        if cert_file and key_file:
+            try:
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                context.load_cert_chain(cert_file, key_file)
+                server.socket = context.wrap_socket(server.socket, server_side=True)
+                use_ssl = True
+                logger.info(f"SSL/TLS 已启用（测试用自签名证书）")
+            except Exception as e:
+                logger.warning(f"SSL 启用失败，回退到 HTTP: {e}")
 
     protocol = "https" if use_ssl else "http"
     logger.info("=" * 50)
@@ -443,6 +447,8 @@ if __name__ == '__main__':
     if use_ssl:
         logger.info(f"   证书: {cert_file}")
         logger.info(f"   注意: 自签名证书，浏览器会提示不安全，测试使用正常")
+    else:
+        logger.info(f"   协议: HTTP 直连（VECTRA_NO_SSL）")
     logger.info(f"   按 Ctrl+C 停止")
     logger.info("=" * 50)
 
