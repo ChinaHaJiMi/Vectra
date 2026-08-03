@@ -600,6 +600,12 @@ ${methodHint}
     el.rightPanel.classList.toggle('panel-hidden', !hasWorld || !isCreation);
     el.playPanel.classList.toggle('panel-hidden', !hasWorld || isCreation);
     el.storageIndicator.textContent = vectraStorage.label;
+    // 小恐龙彩蛋：无世界时显示
+    if (!hasWorld && isCreation && window.VectraDino) {
+      VectraDino.show();
+    } else if (window.VectraDino) {
+      VectraDino.hide();
+    }
   }
 
   // 阶段标签仅用于展示，不可点击跳转
