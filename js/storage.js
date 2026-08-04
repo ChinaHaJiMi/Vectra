@@ -190,7 +190,7 @@ class VectraStorage {
         return s;
       }
     } catch (_) {}
-    return { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096 };
+    return { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096, autoRate: 5 };
   }
 }
 

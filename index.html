@@ -79,6 +79,8 @@
         </div>
         <div class="topbar-right">
           练度 <span id="plevel">Lv.1</span><span class="sep">|</span>
+          对话 <button id="btn-play-mode" class="spd active" title="自动对话：NPC会主动交流">🔄 自动</button>
+          <span class="sep">|</span>
           倍速
           <button class="spd" data-s="0.5">0.5×</button>
           <button class="spd active" data-s="1">1×</button>
@@ -161,6 +163,8 @@
         <label class="field-label">Temperature</label>
         <div class="range-row"><input type="range" id="settings-temp" min="0" max="2" step="0.1" value="0.8"><span id="settings-temp-val">0.8</span></div>
         <label class="field-label">Max Tokens</label><input type="number" id="settings-maxtokens" class="field-input" value="4096">
+        <label class="field-label">自动交流频率</label>
+        <div class="range-row"><input type="number" id="settings-autorate" class="field-input" min="0" max="60" value="5" style="width:80px;"><span style="font-size:11px;color:var(--text-muted);">次/分钟 · 0=关闭自动交流（仅 Auto 模式生效）</span></div>
         <div class="field-hint">播种者与NPC世界系统将使用此配置调用 LLM。</div>
       </div>
       <div class="modal-footer"><button id="btn-settings-test" class="btn-test">测试连接</button><button id="btn-settings-save" class="btn-primary">保存</button></div>
@@ -206,9 +210,9 @@
   </div>
 
   <script src="js/utils/sanitize.js?v=6"></script>
-  <script src="js/storage.js?v=6"></script>
+  <script src="js/storage.js?v=7"></script>
   <script src="js/trex/runner.js?v=1"></script>
   <script src="js/trex.js?v=1"></script>
-  <script src="js/app.js?v=8"></script>
+  <script src="js/app.js?v=9"></script>
 </body>
 </html>

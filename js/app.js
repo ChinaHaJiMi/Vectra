@@ -14,7 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
     npcs: [], quests: [], messages: [],
     // 用于给 NPC 分配初始位置的地点池
     _locationPool: ['📍 酒馆', '📍 广场', '📍 集市', '📍 铁匠铺', '📍 教堂', '📍 港口', '📍 城堡', '📍 图书馆', '📍 花园', '📍 城墙'],
-    settings: { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096 },
+    settings: { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096, autoRate: 5 },
     launched: false,
     mode: 'creation',
     play: {
@@ -25,6 +25,9 @@ document.addEventListener('DOMContentLoaded', () => {
       scene: [],
       activeNpc: null,
       location: '📍 世界地图',
+      mode: 'auto',        // 对话模式: 'auto' | 'passive'
+      nextAutoAt: 0,       // 下次允许自动交流的时间戳
+      typingPause: false,  // 玩家正在编辑消息时暂停世界
     },
   };
 
@@ -41,7 +44,8 @@ document.addEventListener('DOMContentLoaded', () => {
     pworldName: $('#pworld-name'), pclock: $('#pclock'), pstatus: $('#pstatus'), plevel: $('#plevel'),
     pnpcList: $('#pnpc-list'), pscene: $('#pscene'), pevents: $('#pevents'),
     pinput: $('#pinput'), psend: $('#psend'), plocation: $('#plocation'), pactiveNpc: $('#pactive-npc'),
-    spdBtns: () => $$('.spd'), backBtn: $('#btn-back-creation'),
+    spdBtns: () => $$('.spd'), backBtn: $('#btn-back-creation'), btnPlayMode: $('#btn-play-mode'),
+    settingsAutoRate: $('#settings-autorate'),
     modalSettings: $('#modal-settings'), settingsEndpoint: $('#settings-endpoint'), settingsKey: $('#settings-key'),
     settingsModel: $('#settings-model'), settingsTemp: $('#settings-temp'), settingsTempVal: $('#settings-temp-val'),
     settingsMaxTokens: $('#settings-maxtokens'), btnSettingsTest: $('#btn-settings-test'), btnSettingsSave: $('#btn-settings-save'), btnSettingsClose: $('#btn-settings-close'),
@@ -62,6 +66,7 @@ document.addEventListener('DOMContentLoaded', () => {
       playEvents: state.play.events.slice(-200),
       playScene: state.play.scene.slice(-100),
       playClock: state.play.clock,
+      playMode: state.play.mode,
       launched: state.launched,
     });
     el.storageIndicator.textContent = vectraStorage.label;
@@ -76,12 +81,14 @@ document.addEventListener('DOMContentLoaded', () => {
       state.play.events = d.playEvents || [];
       state.play.clock = d.playClock || { day:1, hour:0, minute:0 };
       state.play.scene = d.playScene || [];
+      state.play.mode = d.playMode === 'passive' ? 'passive' : 'auto';
     } else {
       state.phase = 1; state.bible = { lore:'', laws:[], era:'' };
       state.npcs = []; state.quests = []; state.messages = [];
       state.launched = false;
       state.play.events = []; state.play.clock = { day:1, hour:0, minute:0 };
       state.play.scene = [];
+      state.play.mode = 'auto';
     }
   }
 
@@ -227,10 +234,14 @@ document.addEventListener('DOMContentLoaded', () => {
       el.rightPanel.classList.add('panel-hidden');
       el.playPanel.classList.remove('panel-hidden');
       renderPlayMode();
+      startClock();
+      startAutoLoop();
     } else {
       el.playPanel.classList.add('panel-hidden');
       el.mainPanel.classList.remove('panel-hidden');
       el.rightPanel.classList.remove('panel-hidden');
+      stopAutoLoop();
+      state.play.typingPause = false;
     }
   }
 
@@ -300,6 +311,12 @@ document.addEventListener('DOMContentLoaded', () => {
     renderNpcList();
     renderScene();
     renderEvents();
+    if (el.btnPlayMode) {
+      const isAuto = state.play.mode === 'auto';
+      el.btnPlayMode.textContent = isAuto ? '🔄 自动' : '👁 被动';
+      el.btnPlayMode.classList.toggle('active', isAuto);
+      el.btnPlayMode.title = isAuto ? '自动对话：NPC会主动交流（编辑消息时自动暂停）' : '被动对话：仅当玩家说话/行动时NPC跟进';
+    }
     if (state.play.events.length === 0) {
       addEvent('世界已启动。冒险开始。');
       addSceneMsg('narrator', '世界在你面前展开。选择一位居民开始互动，或输入指令。');
@@ -391,10 +408,93 @@ ${methodHint}
     storageSave();
   }
 
+  // ===== Auto 模式：NPC 主动交流 =====
+  // 让 NPC 基于当前场景主动开口说一句（不等待玩家输入）
+  async function _npcAutoSay(npc, targetNpc) {
+    const longMem = await vectraStorage.loadNPCMemory(state.currentWorld, npc.id) || '';
+    const shortMem = npc._shortMem || '';
+    const nowClock = formatClock();
+    const sceneContext = state.play.scene.slice(-10).map(s =>
+      `[${s.time || nowClock}][${s.type}] ${s.content}`
+    ).join('\n');
+    const targetHint = targetNpc
+      ? `你身边是「${targetNpc.name}」，你想主动跟他聊几句。`
+      : '你独自待着，自然地自言自语几句。';
+
+    const systemP = `## 世界背景
+${state.bible.lore || '一个普通的现代世界'}
+纪元：${state.bible.era || '当代'}
+
+## 你的身份
+你是「${npc.name}」，${npc.role || '一个普通人'}。
+你的性格：${npc.personality || '和大多数人差不多'}
+你的经历：${npc.backstory || '过着平凡的生活'}
+
+## 你记得的事
+${shortMem ? '最近发生的事：\n' + shortMem : '今天没什么特别的。'}
+${longMem ? '\n你更久远的记忆：\n' + longMem : ''}
+
+## 现在的场景
+当前时间：${nowClock}
+你的位置：${npc.location || state.play.location}
+${targetHint}
+
+## 扮演规则
+- 你就是${npc.name}，活在这个世界里的人，用第一人称「我」口语化说话
+- 主动开口，说一句自然的话：寒暄、问事、聊近况都行
+- 字数控制在80字以内，说一句就好，别长篇大论
+- 不要提及你是AI、NPC或语言模型`;
+
+    const reply = await callLLM([
+      { role: 'system', content: '当前时间：' + nowClock + '\n\n以下是刚才发生的对话（带时间戳）：\n' + sceneContext + '\n\n现在没有人点名你，你自然地主动开口。' },
+      { role: 'user', content: '（你开口说话）' }
+    ], systemP);
+
+    const escName = npc.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return reply.replace(/^(你：|NPC：|)/, '').replace(new RegExp('^' + escName + '：'), '').trim();
+  }
+
+  let _autoBusy = false;
+  async function _autoInteract() {
+    if (_autoBusy) return;
+    _autoBusy = true;
+    try {
+      const online = state.npcs.filter(n => n.online !== false);
+      if (online.length < 2) return;
+
+      // 优先挑选同一地点的两人组（"身边的NPC"），否则任选两人
+      const byLoc = {};
+      online.forEach(n => { const k = n.location || '📍 世界地图'; (byLoc[k] = byLoc[k] || []).push(n); });
+      let pool = null;
+      for (const g of Object.values(byLoc)) { if (g.length >= 2) { pool = g; break; } }
+      if (!pool) pool = online;
+
+      const ia = Math.floor(Math.random() * pool.length);
+      let ib = Math.floor(Math.random() * (pool.length - 1));
+      if (ib >= ia) ib++;
+      const a = pool[ia], b = pool[ib];
+
+      addSceneMsg('narrator', '💬 ' + a.name + ' 与 ' + b.name + ' 闲聊起来…');
+      const line = await _npcAutoSay(a, b);
+      if (!line || /^(⚠️|❌)/.test(line)) {
+        state.play.scene = state.play.scene.filter(s => !s.content.includes('闲聊起来'));
+        return;
+      }
+      addSceneMsg('npc', a.name + '：' + line);
+      addEvent(a.name + ' 主动和 ' + b.name + ' 搭话', a.name);
+      // 对方接话
+      await _replyNpc(b, a.name + ' 主动对你说："' + line.slice(0, 40) + '"——你自然地接话回应。', null);
+    } finally {
+      _autoBusy = false;
+    }
+  }
+
   async function handlePlaySend() {
     const raw = el.pinput.value.trim();
     if (!raw) return;
     el.pinput.value = '';
+    // 玩家行动完成，世界恢复流动
+    state.play.typingPause = false;
 
     const parsed = _parseMessage(_sanitizeInput(raw, 5000));
 
@@ -449,12 +549,34 @@ ${methodHint}
     storageSave();
   }
 
+  // ===== Auto 模式调度器 =====
+  let autoInterval = null;
+  function startAutoLoop() {
+    if (autoInterval) clearInterval(autoInterval);
+    autoInterval = setInterval(() => {
+      const p = state.play;
+      if (p.mode !== 'auto') return;
+      if (!p.running || p.typingPause) return;
+      if (el.playPanel.classList.contains('panel-hidden')) return;
+      if (!state.settings.key || !state.settings.model) return;
+      const rate = Math.max(0, parseInt(state.settings.autoRate, 10) || 5);
+      if (rate <= 0) return;
+      const now = Date.now();
+      if (now < p.nextAutoAt) return;
+      p.nextAutoAt = now + 60000 / rate;
+      _autoInteract();
+    }, 1000);
+  }
+  function stopAutoLoop() {
+    if (autoInterval) { clearInterval(autoInterval); autoInterval = null; }
+  }
+
   // ===== 时钟系统 =====
   let clockInterval = null;
   function startClock() {
     if (clockInterval) clearInterval(clockInterval);
     clockInterval = setInterval(() => {
-      if (!state.play.running) return;
+      if (!state.play.running || state.play.typingPause) return;
       state.play.clock.minute += state.play.speed;
       if (state.play.clock.minute >= 60) {
         state.play.clock.minute -= 60;
@@ -585,7 +707,6 @@ ${methodHint}
     document.getElementById('btn-play')?.addEventListener('click',()=>{
       state.launched = true;
       switchMode('play');
-      startClock();
       storageSave();
     });
   }
@@ -682,6 +803,7 @@ ${methodHint}
   function openSettingsModal(){
     const s=state.settings;el.settingsEndpoint.value=s.endpoint;el.settingsKey.value=s.key;el.settingsModel.value=s.model;
     el.settingsTemp.value=s.temperature;el.settingsTempVal.textContent=s.temperature;el.settingsMaxTokens.value=s.maxTokens;
+    el.settingsAutoRate.value=s.autoRate!=null?s.autoRate:5;
     el.modalSettings.style.display='flex';
   }
   function closeSettingsModal(){el.modalSettings.style.display='none';}
@@ -706,6 +828,7 @@ ${methodHint}
       model: _sanitizeInput(el.settingsModel.value.trim(), 200),
       temperature: parseFloat(el.settingsTemp.value) || 0.8,
       maxTokens: parseInt(el.settingsMaxTokens.value) || 4096,
+      autoRate: Math.max(0, parseInt(el.settingsAutoRate.value, 10) || 5),
     };
     vectraStorage.saveSettings(state.settings);closeSettingsModal();addMessage('sower','⚙ API 设置已保存。');
   });
@@ -718,6 +841,22 @@ ${methodHint}
   // ===== 游玩输入 =====
   el.psend.addEventListener('click', handlePlaySend);
   el.pinput.addEventListener('keydown', (e) => { if (e.key==='Enter'&&!e.shiftKey) { e.preventDefault(); handlePlaySend(); } });
+  // 玩家编辑消息时暂停世界（Auto 模式下的时钟与自动交流都会暂停）
+  el.pinput.addEventListener('focus', () => { state.play.typingPause = true; });
+  el.pinput.addEventListener('blur', () => { state.play.typingPause = false; });
+
+  // ===== 对话模式切换 =====
+  el.btnPlayMode.addEventListener('click', () => {
+    state.play.mode = state.play.mode === 'auto' ? 'passive' : 'auto';
+    renderPlayMode();
+    if (state.play.mode === 'auto') {
+      state.play.nextAutoAt = 0; // 切换回来时立刻可以自动交流
+      addEvent('💬 对话模式：Auto —— NPC会主动交流');
+    } else {
+      addEvent('👁 对话模式：Passive —— 仅回应玩家');
+    }
+    storageSave();
+  });
 
   // ===== 倍速控制 =====
   el.spdBtns().forEach(btn => {
@@ -740,6 +879,8 @@ ${methodHint}
     state.mode = 'creation';
     updatePanelVisibility();
     if (clockInterval) clearInterval(clockInterval);
+    stopAutoLoop();
+    state.play.typingPause = false;
     if (state.launched) {
       el.mainPanel.classList.add('panel-hidden');
       el.rightPanel.classList.add('panel-hidden');
@@ -779,7 +920,6 @@ ${methodHint}
         if (state.messages.length===0) addMessage('sower', '已切换到世界「'+(item.querySelector('.world-item-name')?.textContent||'')+'」。');
         el.btnConfirm.style.display = 'none';
         switchMode('play');
-        startClock();
         renderAll();
       } else {
         if (state.messages.length===0) addMessage('sower', '已切换到世界「'+(item.querySelector('.world-item-name')?.textContent||'')+'」。');
@@ -812,6 +952,7 @@ ${methodHint}
       el.playPanel.classList.remove('panel-hidden');
       renderPlayMode();
       startClock();
+      startAutoLoop();
     }
     if (state.launched) {
       el.chatInput.disabled = true;
