@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const state = {
     worlds: [], currentWorld: null, phase: 1,
     bible: { lore: '', laws: [], era: '' },
+    player: { name: '', role: '', backstory: '' },
     npcs: [], quests: [], messages: [],
     // 用于给 NPC 分配初始位置的地点池
     _locationPool: ['📍 酒馆', '📍 广场', '📍 集市', '📍 铁匠铺', '📍 教堂', '📍 港口', '📍 城堡', '📍 图书馆', '📍 花园', '📍 城墙'],
@@ -41,16 +42,20 @@ document.addEventListener('DOMContentLoaded', () => {
     bibleBody: $('#bible-body'), rosterBody: $('#roster-body'), questBody: $('#quest-body'), launchBody: $('#launch-body'),
     tabBtns: () => $$('.tab-btn'), tabContents: () => $$('.tab-content'), sowerStatus: $('.sower-status'),
     playPanel: $('#play-panel'), mainPanel: $('#main-panel'), rightPanel: $('#right-panel'),
-    pworldName: $('#pworld-name'), pclock: $('#pclock'), pstatus: $('#pstatus'), plevel: $('#plevel'),
+    pworldName: $('#pworld-name'), pclock: $('#pclock'), pstatus: $('#pstatus'), plevel: $('#plevel'), pplayer: $('#pplayer'),
     pnpcList: $('#pnpc-list'), pscene: $('#pscene'), pevents: $('#pevents'),
     pinput: $('#pinput'), psend: $('#psend'), plocation: $('#plocation'), pactiveNpc: $('#pactive-npc'),
-    spdBtns: () => $$('.spd'), backBtn: $('#btn-back-creation'), btnPlayMode: $('#btn-play-mode'),
+    spdBtns: () => $$('.spd'), backBtn: $('#btn-back-creation'), btnPlayMode: $('#btn-play-mode'), btnWorldBroadcast: $('#btn-world-broadcast'),
     settingsAutoRate: $('#settings-autorate'),
     modalSettings: $('#modal-settings'), settingsEndpoint: $('#settings-endpoint'), settingsKey: $('#settings-key'),
     settingsModel: $('#settings-model'), settingsTemp: $('#settings-temp'), settingsTempVal: $('#settings-temp-val'),
     settingsMaxTokens: $('#settings-maxtokens'), btnSettingsTest: $('#btn-settings-test'), btnSettingsSave: $('#btn-settings-save'), btnSettingsClose: $('#btn-settings-close'),
-    modalNpc: $('#modal-npc'), npcName: $('#npc-name'), npcAge: $('#npc-age'), npcRole: $('#npc-role'),
+    modalNpc: $('#modal-npc'), npcName: $('#npc-name'), npcKind: $('#npc-kind'), npcAge: $('#npc-age'), npcRole: $('#npc-role'),
     npcPersonality: $('#npc-personality'), npcBackstory: $('#npc-backstory'), btnNpcSave: $('#btn-npc-save'), btnNpcClose: $('#btn-npc-close'),
+    modalBible: $('#modal-bible'), bibleLore: $('#bible-lore'), bibleLaws: $('#bible-laws'), bibleEra: $('#bible-era'),
+    btnBibleSave: $('#btn-bible-save'), btnBibleClose: $('#btn-bible-close'),
+    modalPlayer: $('#modal-player'), playerName: $('#player-name'), playerRole: $('#player-role'), playerBackstory: $('#player-backstory'),
+    btnPlayerSave: $('#btn-player-save'), btnPlayerClose: $('#btn-player-close'),
     modalQuest: $('#modal-quest'), questType: $('#quest-type'), questName: $('#quest-name'), questDesc: $('#quest-desc'),
     btnQuestSave: $('#btn-quest-save'), btnQuestClose: $('#btn-quest-close'),
     modalMemory: $('#modal-memory'), memoryShort: $('#memory-short'), memoryLong: $('#memory-long'),
@@ -61,7 +66,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function storageSave() {
     await vectraStorage.saveWorldList(state.worlds, state.currentWorld);
     await vectraStorage.saveWorldData(state.currentWorld, {
-      phase: state.phase, bible: state.bible, npcs: state.npcs, quests: state.quests,
+      phase: state.phase, bible: state.bible, player: state.player, npcs: state.npcs, quests: state.quests,
       messages: state.messages.slice(-100),
       playEvents: state.play.events.slice(-200),
       playScene: state.play.scene.slice(-100),
@@ -76,6 +81,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const d = await vectraStorage.loadWorldData(id);
     if (d) {
       state.phase = d.phase || 1; state.bible = d.bible || { lore:'', laws:[], era:'' };
+      state.player = d.player || { name:'', role:'', backstory:'' };
       state.npcs = d.npcs || []; state.quests = d.quests || []; state.messages = d.messages || [];
       state.launched = d.launched || false;
       state.play.events = d.playEvents || [];
@@ -84,6 +90,7 @@ document.addEventListener('DOMContentLoaded', () => {
       state.play.mode = d.playMode === 'passive' ? 'passive' : 'auto';
     } else {
       state.phase = 1; state.bible = { lore:'', laws:[], era:'' };
+      state.player = { name:'', role:'', backstory:'' };
       state.npcs = []; state.quests = []; state.messages = [];
       state.launched = false;
       state.play.events = []; state.play.clock = { day:1, hour:0, minute:0 };
@@ -161,6 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.npcs.push({
           id: 'n' + Date.now() + Math.random().toString(36).slice(2,6),
           name: _sanitizeInput(n.name, 100) || '未命名',
+          kind: n.kind === 'plot' ? 'plot' : 'key',
           role: _sanitizeInput(n.role, 200),
           personality: _sanitizeInput(n.personality, 2000),
           age: _sanitizeInput(n.age, 50),
@@ -257,13 +265,14 @@ document.addEventListener('DOMContentLoaded', () => {
     el.pstatus.textContent = state.play.running ? '▶ LIVE' : '⏸ PAUSED';
     el.pstatus.className = state.play.running ? 'status-live' : 'status-paused';
     el.plevel.textContent = 'Lv.' + (state.npcs.length + state.quests.length + 1);
+    el.pplayer.textContent = (state.player && state.player.name) ? state.player.name : '旅人';
   }
 
   function renderNpcList() {
     el.pnpcList.innerHTML = state.npcs.map((n,i) =>
       `<div class="npc-play-item" data-idx="${i}">
         <span class="dot" style="background:${n.online!==false?'var(--green)':'var(--text-muted)'}"></span>
-        <span>${Sanitize.htmlEncode(n.name)}</span>
+        <span>${n.kind==='plot'?'📖':'⭐'} ${Sanitize.htmlEncode(n.name)}</span>
         <span class="npc-loc" style="margin-left:auto;font-size:10px;color:var(--text-muted);">${n.location?Sanitize.htmlEncode(n.location):''}</span>
       </div>`
     ).join('');
@@ -355,6 +364,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const methodHint = method ? `（对方通过${method}联系你）` : '（对方就在你面前）';
     const locationHint = `你的位置：${npcLoc}`;
+    const kindHint = npc.kind === 'plot'
+      ? '你是与这个世界核心故事线相关的剧情角色。'
+      : '你是这个世界的重要人物，居民们对你很熟悉。';
 
     const systemP = `## 世界背景
 ${state.bible.lore || '一个普通的现代世界'}
@@ -362,6 +374,7 @@ ${state.bible.lore || '一个普通的现代世界'}
 
 ## 你的身份
 你是「${npc.name}」，${npc.role || '一个普通人'}。
+${kindHint}
 你的性格：${npc.personality || '和大多数人差不多'}
 你的经历：${npc.backstory || '过着平凡的生活'}
 
@@ -376,6 +389,7 @@ ${locationHint}
 ## 扮演规则
 - 你就是${npc.name}，完完全全活在这个世界里的人
 - 用第一人称「我」说话，口语化、自然，别像念设定
+- 说话时可以用（神态/动作）描述表情动作，例如：（叹了口气）（皱眉）（忍不住笑出声）
 ${methodHint}
 - 你对自己的世界是熟悉的，对反常的事会觉得奇怪
 - 不知道的事就说不知道，别硬编
@@ -387,10 +401,13 @@ ${methodHint}
       `[${s.time || nowClock}][${s.type}] ${s.content}`
     ).join('\n');
 
+    const playerName = (state.player && state.player.name) || '旅人';
+    const playerDesc = (state.player && state.player.role) ? `（${state.player.role}）` : '';
+
     addSceneMsg('narrator', npc.name + ' 正在思考…');
 
     const reply = await callLLM([
-      { role: 'system', content: '当前时间：' + nowClock + '\n\n以下是刚才发生的对话（带时间戳）：\n' + sceneContext + '\n\n现在回应对方。' },
+      { role: 'system', content: '当前时间：' + nowClock + '\n\n正在和你交谈的人是「' + playerName + '」' + playerDesc + '。\n\n以下是刚才发生的对话（带时间戳）：\n' + sceneContext + '\n\n现在回应对方。' },
       { role: 'user', content: userMsg }
     ], systemP);
 
@@ -398,7 +415,7 @@ ${methodHint}
 
     const NPC_PREFIX = npc.name + '：';
     const cleanReply = reply.replace(/^(你：|NPC：|)/, '').replace(NPC_PREFIX, '').trim();
-    const prefix = method ? `${npc.name}（${method}）：` : `${npc.name}：`;
+    const prefix = method ? `${npc.name}（${npcLoc} · ${method}）：` : `${npc.name}（${npcLoc}）：`;
     addSceneMsg('npc', prefix + cleanReply);
     addEvent(npc.name + (method ? `通过${method}` : '') + ' 回话了', npc.name);
 
@@ -420,6 +437,9 @@ ${methodHint}
     const targetHint = targetNpc
       ? `你身边是「${targetNpc.name}」，你想主动跟他聊几句。`
       : '你独自待着，自然地自言自语几句。';
+    const kindHint = npc.kind === 'plot'
+      ? '你是与这个世界核心故事线相关的剧情角色。'
+      : '你是这个世界的重要人物，居民们对你很熟悉。';
 
     const systemP = `## 世界背景
 ${state.bible.lore || '一个普通的现代世界'}
@@ -427,6 +447,7 @@ ${state.bible.lore || '一个普通的现代世界'}
 
 ## 你的身份
 你是「${npc.name}」，${npc.role || '一个普通人'}。
+${kindHint}
 你的性格：${npc.personality || '和大多数人差不多'}
 你的经历：${npc.backstory || '过着平凡的生活'}
 
@@ -442,6 +463,7 @@ ${targetHint}
 ## 扮演规则
 - 你就是${npc.name}，活在这个世界里的人，用第一人称「我」口语化说话
 - 主动开口，说一句自然的话：寒暄、问事、聊近况都行
+- 说话时可以用（神态/动作）描述表情动作，例如：（伸了个懒腰）（望向远处）
 - 字数控制在80字以内，说一句就好，别长篇大论
 - 不要提及你是AI、NPC或语言模型`;
 
@@ -462,25 +484,26 @@ ${targetHint}
       const online = state.npcs.filter(n => n.online !== false);
       if (online.length < 2) return;
 
-      // 优先挑选同一地点的两人组（"身边的NPC"），否则任选两人
+      // 严格地点限制：只有位于同一地点的 NPC 才会互相交谈
       const byLoc = {};
       online.forEach(n => { const k = n.location || '📍 世界地图'; (byLoc[k] = byLoc[k] || []).push(n); });
       let pool = null;
       for (const g of Object.values(byLoc)) { if (g.length >= 2) { pool = g; break; } }
-      if (!pool) pool = online;
+      if (!pool) return;
 
       const ia = Math.floor(Math.random() * pool.length);
       let ib = Math.floor(Math.random() * (pool.length - 1));
       if (ib >= ia) ib++;
       const a = pool[ia], b = pool[ib];
+      const locHint = a.location || state.play.location;
 
-      addSceneMsg('narrator', '💬 ' + a.name + ' 与 ' + b.name + ' 闲聊起来…');
+      addSceneMsg('narrator', '💬 ' + a.name + ' 与 ' + b.name + ' 在' + locHint + '闲聊起来…');
       const line = await _npcAutoSay(a, b);
       if (!line || /^(⚠️|❌)/.test(line)) {
         state.play.scene = state.play.scene.filter(s => !s.content.includes('闲聊起来'));
         return;
       }
-      addSceneMsg('npc', a.name + '：' + line);
+      addSceneMsg('npc', a.name + '（' + locHint + '）：' + line);
       addEvent(a.name + ' 主动和 ' + b.name + ' 搭话', a.name);
       // 对方接话
       await _replyNpc(b, a.name + ' 主动对你说："' + line.slice(0, 40) + '"——你自然地接话回应。', null);
@@ -497,10 +520,11 @@ ${targetHint}
     state.play.typingPause = false;
 
     const parsed = _parseMessage(_sanitizeInput(raw, 5000));
+    const playerName = (state.player && state.player.name) || '你';
 
     if (parsed.type === 'broadcast') {
       // 广播：对所有人说
-      addSceneMsg('player', parsed.msg);
+      addSceneMsg('player', playerName + '：' + parsed.msg);
       addEvent('你: ' + parsed.msg.slice(0, 50));
 
       if (state.npcs.length === 0) {
@@ -518,7 +542,7 @@ ${targetHint}
       // @NPC名：只对说话——不写入共享场景，只对目标 NPC 私下说
       const npc = state.npcs.find(n => n.name === parsed.targetName);
       if (!npc) {
-        addSceneMsg('player', raw);
+        addSceneMsg('player', playerName + '：' + raw);
         addSceneMsg('narrator', `没有找到叫「${parsed.targetName}」的人。`);
         addEvent('你尝试找 ' + parsed.targetName + ' 但没找到');
         return;
@@ -534,7 +558,7 @@ ${targetHint}
       // /名字 方式：特殊通信——只对目标 NPC
       const npc = state.npcs.find(n => n.name === parsed.targetName);
       if (!npc) {
-        addSceneMsg('player', raw);
+        addSceneMsg('player', playerName + '：' + raw);
         addSceneMsg('narrator', `没有找到叫「${parsed.targetName}」的人。`);
         addEvent('你尝试找 ' + parsed.targetName + ' 但没找到');
         return;
@@ -549,6 +573,28 @@ ${targetHint}
     storageSave();
   }
 
+  // ===== 世界广播：向整个世界推送事件，所有在线 NPC 会做出反应 =====
+  async function _broadcastEvent(text) {
+    const msg = _sanitizeInput(text.trim(), 2000);
+    if (!msg) return;
+    addSceneMsg('narrator', '📢 世界事件：' + msg);
+    addEvent('📢 世界广播: ' + msg.slice(0, 80));
+    const online = state.npcs.filter(n => n.online !== false);
+    if (online.length === 0) {
+      addSceneMsg('narrator', '世界安静得可怕，没有回应。');
+      return;
+    }
+    for (const npc of online) {
+      await _replyNpc(npc, '[世界事件] ' + msg + '——你对这件事做出反应。', null);
+    }
+    storageSave();
+  }
+
+  el.btnWorldBroadcast.addEventListener('click', () => {
+    const text = prompt('📢 向整个世界广播事件：\n（NPC 们会听到并做出反应）');
+    if (text && text.trim()) _broadcastEvent(text);
+  });
+
   // ===== Auto 模式调度器 =====
   let autoInterval = null;
   function startAutoLoop() {
@@ -556,6 +602,7 @@ ${targetHint}
     autoInterval = setInterval(() => {
       const p = state.play;
       if (p.mode !== 'auto') return;
+      if (document.hidden) return;   // 后台标签页不自动交流，避免多标签互相串台
       if (!p.running || p.typingPause) return;
       if (el.playPanel.classList.contains('panel-hidden')) return;
       if (!state.settings.key || !state.settings.model) return;
@@ -576,6 +623,7 @@ ${targetHint}
   function startClock() {
     if (clockInterval) clearInterval(clockInterval);
     clockInterval = setInterval(() => {
+      if (document.hidden) return;   // 后台标签页暂停时间流动
       if (!state.play.running || state.play.typingPause) return;
       state.play.clock.minute += state.play.speed;
       if (state.play.clock.minute >= 60) {
@@ -618,13 +666,14 @@ ${targetHint}
       e.stopPropagation(); const id=b.dataset.id; const w=state.worlds.find(x=>x.id===id);
       if(!w||!confirm('删除世界「'+w.name+'」？')) return;
       await vectraStorage.deleteWorld(id);
+      const idx=state.worlds.findIndex(x=>x.id===id);
       state.worlds=state.worlds.filter(x=>x.id!==id);
       if(state.currentWorld===id){
-        state.currentWorld=state.worlds.length>0?state.worlds[0].id:null;
-        if(state.currentWorld) await storageLoadWorld(state.currentWorld);
-        else {state.phase=1;state.bible={lore:'',laws:[],era:''};state.npcs=[];state.quests=[];state.messages=[];}
+        state.currentWorld=state.worlds.length>0?state.worlds[Math.min(idx,state.worlds.length-1)].id:null;
       }
-      renderAll(); if(state.currentWorld) switchTab('bible');
+      await vectraStorage.saveWorldList(state.worlds, state.currentWorld);
+      // 删除世界后直接刷新页面，避免状态残留导致回退到编辑界面
+      location.reload();
     }));
   }
 
@@ -636,25 +685,21 @@ ${targetHint}
     const b=state.bible;
     el.bibleBody.innerHTML=`
       <div style="margin-bottom:8px;font-size:11px;color:var(--text-muted);">在下方直接编写世界设定，或通过播种者对话生成。</div>
-      <div class="editable-section"><div class="editable-header"><h4 style="font-size:12px;color:var(--cyan);letter-spacing:1px;">🌍 世界观</h4><button class="btn-edit-sm" data-edit="lore">✎ 编辑</button></div>
-        <div class="editable-view" id="view-lore"><p style="font-size:13px;color:var(--text-secondary);line-height:1.6;white-space:pre-wrap;">${Sanitize.htmlEncode(b.lore)||'（空）'}</p></div>
-        <div class="editable-edit" id="edit-lore" style="display:none;"><textarea class="inline-editor">${Sanitize.htmlEncode(b.lore)}</textarea><div class="inline-actions"><button class="btn-primary-tiny" data-save="lore">保存</button><button class="btn-cancel-tiny" data-cancel="lore">取消</button></div></div>
+      <button class="btn-edit-sm" id="btn-edit-bible" style="margin-bottom:10px;">✎ 编辑世界设定</button>
+      <div class="editable-section"><div class="editable-header"><h4 style="font-size:12px;color:var(--cyan);letter-spacing:1px;">🌍 世界观</h4></div>
+        <div class="editable-view"><p style="font-size:13px;color:var(--text-secondary);line-height:1.6;white-space:pre-wrap;">${Sanitize.htmlEncode(b.lore)||'（空）'}</p></div>
       </div>
-      <div class="editable-section"><div class="editable-header"><h4 style="font-size:12px;color:var(--cyan);letter-spacing:1px;">⚖️ 法则</h4><button class="btn-edit-sm" data-edit="laws">✎ 编辑</button></div>
-        <div class="editable-view" id="view-laws">${b.laws.length?`<ul style="list-style:none;">${b.laws.map(l=>`<li style="font-size:13px;color:var(--text-secondary);padding:3px 0 3px 10px;border-left:2px solid var(--border-color);margin-bottom:3px;">${Sanitize.htmlEncode(l)}</li>`).join('')}</ul>`:'<span style="font-size:13px;color:var(--text-muted);">尚无法则</span>'}</div>
-        <div class="editable-edit" id="edit-laws" style="display:none;"><textarea class="inline-editor" rows="4" placeholder="每行一条法则">${b.laws.map(l=>Sanitize.htmlEncode(l)).join('\n')}</textarea><div class="inline-actions"><button class="btn-primary-tiny" data-save="laws">保存</button><button class="btn-cancel-tiny" data-cancel="laws">取消</button></div></div>
+      <div class="editable-section"><div class="editable-header"><h4 style="font-size:12px;color:var(--cyan);letter-spacing:1px;">⚖️ 法则</h4></div>
+        <div class="editable-view">${b.laws.length?`<ul style="list-style:none;">${b.laws.map(l=>`<li style="font-size:13px;color:var(--text-secondary);padding:3px 0 3px 10px;border-left:2px solid var(--border-color);margin-bottom:3px;">${Sanitize.htmlEncode(l)}</li>`).join('')}</ul>`:'<span style="font-size:13px;color:var(--text-muted);">尚无法则</span>'}</div>
       </div>
-      <div class="editable-section"><div class="editable-header"><h4 style="font-size:12px;color:var(--cyan);letter-spacing:1px;">📅 纪元</h4><button class="btn-edit-sm" data-edit="era">✎ 编辑</button></div>
-        <div class="editable-view" id="view-era"><p style="font-size:13px;color:var(--text-secondary);">${Sanitize.htmlEncode(b.era)||'未设定'}</p></div>
-        <div class="editable-edit" id="edit-era" style="display:none;"><textarea class="inline-editor" rows="1">${Sanitize.htmlEncode(b.era||'')}</textarea><div class="inline-actions"><button class="btn-primary-tiny" data-save="era">保存</button><button class="btn-cancel-tiny" data-cancel="era">取消</button></div></div>
+      <div class="editable-section"><div class="editable-header"><h4 style="font-size:12px;color:var(--cyan);letter-spacing:1px;">📅 纪元</h4></div>
+        <div class="editable-view"><p style="font-size:13px;color:var(--text-secondary);">${Sanitize.htmlEncode(b.era)||'未设定'}</p></div>
       </div>
-      <button class="btn-confirm-manual" id="btn-confirm-bible">✓ 手动定稿 · 进入下一阶段</button>
+      ${state.launched?'':`<button class="btn-confirm-manual" id="btn-confirm-bible">✓ 手动定稿 · 进入下一阶段</button>`}
     `;
+    document.getElementById('btn-edit-bible')?.addEventListener('click', openBibleModal);
     const cb=document.getElementById('btn-confirm-bible');
     if(cb)cb.addEventListener('click',()=>{el.btnConfirm.style.display='none';addMessage('sower','✓ 世界设定已确认。');advancePhase();});
-    el.bibleBody.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click',()=>{const f=b.dataset.edit;document.getElementById('view-'+f).style.display='none';document.getElementById('edit-'+f).style.display='block';}));
-    el.bibleBody.querySelectorAll('[data-save]').forEach(b=>b.addEventListener('click',()=>{const f=b.dataset.save;const ta=document.querySelector('#edit-'+f+' .inline-editor');let v=ta.value;v=_sanitizeInput(v,50000);if(f==='lore')state.bible.lore=v;else if(f==='era')state.bible.era=v;else if(f==='laws')state.bible.laws=v.split('\n').filter(s=>s.trim()).map(s=>_sanitizeInput(s.trim(),2000));storageSave();renderBible();}));
-    el.bibleBody.querySelectorAll('[data-cancel]').forEach(b=>b.addEventListener('click',()=>{const f=b.dataset.cancel;document.getElementById('view-'+f).style.display='block';document.getElementById('edit-'+f).style.display='none';}));
   }
 
   function renderRoster() {
@@ -662,15 +707,15 @@ ${targetHint}
     el.rosterBody.innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-size:12px;color:var(--text-muted);">总计 ${state.npcs.length} 位NPC</span><button id="btn-add-npc-top" class="btn-add-sm">+ 创建</button></div>
       ${state.npcs.map((n,i)=>`
-        <div class="npc-card"><div class="avatar">${n.icon||'🧑'}</div><div class="info"><div class="name">${Sanitize.htmlEncode(n.name)}</div><div class="detail">${Sanitize.htmlEncode([n.age,n.role].filter(Boolean).join(' · '))}</div></div>
+        <div class="npc-card"><div class="avatar">${n.icon||'🧑'}</div><div class="info"><div class="name">${n.kind==='plot'?'📖':'⭐'} ${Sanitize.htmlEncode(n.name)} <span style="font-size:10px;color:var(--text-muted);">${n.kind==='plot'?'剧情':'紧要'}</span></div><div class="detail">${Sanitize.htmlEncode([n.age,n.role].filter(Boolean).join(' · '))}</div></div>
           <button class="btn-icon-tiny" data-action="mem-npc" data-idx="${i}" title="记忆">🧠</button>
           <button class="btn-icon-tiny" data-action="edit-npc" data-idx="${i}" title="编辑">✎</button>
           <button class="btn-icon-tiny" data-action="del-npc" data-idx="${i}" title="删除">✕</button>
         </div>`).join('')}
-      <div style="margin-top:12px;display:flex;gap:6px;">
+      ${state.launched?'':`<div style="margin-top:12px;display:flex;gap:6px;">
         <button class="btn-confirm-manual" id="btn-confirm-roster" style="flex:1;">✓ 确认居民 · 进入下一阶段</button>
         <button class="btn-secondary-tiny" id="btn-prev-roster">← 上一项</button>
-      </div>
+      </div>`}
     `;
     document.getElementById('btn-add-npc-top')?.addEventListener('click',()=>openNpcModal(null));
     el.rosterBody.querySelectorAll('[data-action="edit-npc"]').forEach(b=>b.addEventListener('click',()=>openNpcModal(parseInt(b.dataset.idx))));
@@ -686,8 +731,9 @@ ${targetHint}
         <div style="display:flex;gap:4px;"><button class="btn-icon-tiny" data-action="edit-quest" data-idx="${i}" title="编辑">✎</button><button class="btn-icon-tiny" data-action="del-quest" data-idx="${i}" title="删除">✕</button></div></div>
         <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">${Sanitize.htmlEncode(q.desc||'')}</div>
       </div>`).join(''):'<div class="empty-state" style="padding:12px;">尚无故事线</div>';
-    el.questBody.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-size:12px;color:var(--text-muted);">${state.quests.length} 条往事</span><button id="btn-add-quest-top" class="btn-add-sm">+ 新建</button></div>${qh}<button class="btn-confirm-manual" id="btn-confirm-quest">✓ 确认故事线 · 进入下一阶段</button>`;
+    el.questBody.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-size:12px;color:var(--text-muted);">${state.quests.length} 条往事</span><button id="btn-add-quest-top" class="btn-add-sm">+ 新建</button></div>${qh}${state.launched?'':`<div style="margin-top:12px;display:flex;gap:6px;"><button class="btn-confirm-manual" id="btn-confirm-quest" style="flex:1;">✓ 确认故事线 · 进入下一阶段</button><button class="btn-secondary-tiny" id="btn-prev-quest">← 上一项</button></div>`}`;
     document.getElementById('btn-confirm-quest')?.addEventListener('click',()=>{el.btnConfirm.style.display='none';addMessage('sower','✓ 往事蓝图已确认。');advancePhase();});
+    document.getElementById('btn-prev-quest')?.addEventListener('click',()=>{advancePhase(-1);switchTab('roster');});
     document.getElementById('btn-add-quest-top')?.addEventListener('click',()=>openQuestModal(null));
     el.questBody.querySelectorAll('[data-action="edit-quest"]').forEach(b=>b.addEventListener('click',()=>openQuestModal(parseInt(b.dataset.idx))));
     el.questBody.querySelectorAll('[data-action="del-quest"]').forEach(b=>b.addEventListener('click',()=>{if(confirm('删除往事？')){state.quests.splice(parseInt(b.dataset.idx),1);renderQuests();storageSave();}}));
@@ -695,17 +741,31 @@ ${targetHint}
 
   function renderLaunch() {
     const ready=state.phase>=4;
-    el.launchBody.innerHTML=ready?`
+    const p=state.player||{name:'',role:'',backstory:''};
+    const playerCard=`
+      <div class="editable-section" style="margin-bottom:12px;">
+        <div class="editable-header"><h4 style="font-size:12px;color:var(--cyan);letter-spacing:1px;">🎮 玩家角色</h4><button class="btn-edit-sm" id="btn-edit-player">✎ 设定</button></div>
+        <div class="editable-view"><p style="font-size:13px;color:var(--text-secondary);">${p.name?`你将化身「${Sanitize.htmlEncode(p.name)}」${p.role?'（'+Sanitize.htmlEncode(p.role)+'）':''}进入这个世界。`:'尚未设定玩家角色。'}</p></div>
+      </div>`;
+    el.launchBody.innerHTML=(ready?`
       <div class="launch-card"><div class="status-badge ready">✓ 世界已就绪</div>
         <div style="font-size:16px;font-weight:600;margin-bottom:8px;">序章：${Sanitize.htmlEncode(state.bible.era||'新纪元')}</div>
         <div class="prologue">${Sanitize.htmlEncode(state.bible.lore||'世界等待你的探索…')}</div>
         <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;">${state.npcs.length} 位居民 · ${state.quests.length} 条往事</div>
+        ${playerCard}
         ${state.launched
-        ? '<div class="status-badge ready" style="margin-bottom:12px;">▶ 世界运行中</div>'
+        ? '<button class="btn-play" id="btn-resume-play">▶ 继续 PLAY</button>'
         : '<button class="btn-play" id="btn-play">▶ 开始 PLAY</button>'}
-      </div>`:'<div class="empty-state">世界尚未就绪<br>请完成前三阶段设定</div>';
+      </div>`:'<div class="empty-state">世界尚未就绪<br>请完成前三阶段设定</div>'+playerCard)+
+      `<div style="margin-top:12px;">${state.launched?'':`<button class="btn-secondary-tiny" id="btn-prev-launch">← 上一项</button>`}</div>`;
+    document.getElementById('btn-edit-player')?.addEventListener('click',openPlayerModal);
+    document.getElementById('btn-prev-launch')?.addEventListener('click',()=>{advancePhase(-1);switchTab('quest');});
     document.getElementById('btn-play')?.addEventListener('click',()=>{
       state.launched = true;
+      switchMode('play');
+      storageSave();
+    });
+    document.getElementById('btn-resume-play')?.addEventListener('click',()=>{
       switchMode('play');
       storageSave();
     });
@@ -735,7 +795,8 @@ ${targetHint}
     el.tabContents().forEach(c=>c.classList.toggle('active',c.id==='tab-'+name));
   }
   function initTabs() {
-    // 标签仅用于展示，不再绑定点击事件
+    // 标签可点击切换查看（已启动世界回编辑界面时用于在设定/名册/蓝图/启动间导航）
+    el.tabBtns().forEach(b=>b.addEventListener('click',()=>switchTab(b.dataset.tab)));
   }
 
   // ===== 模态框 =====
@@ -744,8 +805,8 @@ ${targetHint}
     editingNpcIdx=idx;
     document.querySelector('#modal-npc .modal-header h2').textContent=idx!==null?'编辑 NPC':'新建 NPC';
     document.getElementById('btn-npc-save').textContent=idx!==null?'保存修改':'创建 NPC';
-    if(idx!==null){const n=state.npcs[idx];el.npcName.value=n.name||'';el.npcAge.value=n.age||'';el.npcRole.value=n.role||'';el.npcPersonality.value=n.personality||'';el.npcBackstory.value=n.backstory||'';}
-    else{el.npcName.value='';el.npcAge.value='';el.npcRole.value='';el.npcPersonality.value='';el.npcBackstory.value='';}
+    if(idx!==null){const n=state.npcs[idx];el.npcName.value=n.name||'';el.npcKind.value=n.kind==='plot'?'plot':'key';el.npcAge.value=n.age||'';el.npcRole.value=n.role||'';el.npcPersonality.value=n.personality||'';el.npcBackstory.value=n.backstory||'';}
+    else{el.npcName.value='';el.npcKind.value='key';el.npcAge.value='';el.npcRole.value='';el.npcPersonality.value='';el.npcBackstory.value='';}
     el.modalNpc.style.display='flex';setTimeout(()=>el.npcName.focus(),100);
   }
   function closeNpcModal(){el.modalNpc.style.display='none';editingNpcIdx=null;}
@@ -754,6 +815,7 @@ ${targetHint}
     const npc={
       id:'n'+Date.now(),
       name,
+      kind:el.npcKind.value==='plot'?'plot':'key',
       age:_sanitizeInput(el.npcAge.value.trim(),50),
       role:_sanitizeInput(el.npcRole.value.trim(),200),
       personality:_sanitizeInput(el.npcPersonality.value.trim(),2000),
@@ -763,6 +825,48 @@ ${targetHint}
     closeNpcModal();renderRoster();addMessage('sower','🧑‍🌾 NPC「'+npc.name+'」'+(editingNpcIdx!==null?'已更新':'已创建')+'。');storageSave();
   });
   el.btnNpcClose.addEventListener('click',closeNpcModal);
+
+  // ===== 世界设定模态框 =====
+  function openBibleModal() {
+    el.bibleLore.value = state.bible.lore;
+    el.bibleLaws.value = state.bible.laws.join('\n');
+    el.bibleEra.value = state.bible.era;
+    el.modalBible.style.display='flex';
+    setTimeout(()=>el.bibleLore.focus(),100);
+  }
+  function closeBibleModal(){ el.modalBible.style.display='none'; }
+  el.btnBibleSave.addEventListener('click',()=>{
+    state.bible.lore=_sanitizeInput(el.bibleLore.value.trim(),50000);
+    state.bible.laws=el.bibleLaws.value.split('\n').map(s=>_sanitizeInput(s.trim(),2000)).filter(Boolean);
+    state.bible.era=_sanitizeInput(el.bibleEra.value.trim(),2000);
+    closeBibleModal();
+    renderBible();
+    storageSave();
+    addMessage('sower','📜 世界设定已更新。');
+  });
+  el.btnBibleClose.addEventListener('click',closeBibleModal);
+
+  // ===== 玩家角色模态框 =====
+  function openPlayerModal() {
+    el.playerName.value = state.player.name || '';
+    el.playerRole.value = state.player.role || '';
+    el.playerBackstory.value = state.player.backstory || '';
+    el.modalPlayer.style.display='flex';
+    setTimeout(()=>el.playerName.focus(),100);
+  }
+  function closePlayerModal(){ el.modalPlayer.style.display='none'; }
+  el.btnPlayerSave.addEventListener('click',()=>{
+    const name=_sanitizeInput(el.playerName.value.trim(),100);
+    if(!name){alert('请输入姓名');return;}
+    state.player.name=name;
+    state.player.role=_sanitizeInput(el.playerRole.value.trim(),200);
+    state.player.backstory=_sanitizeInput(el.playerBackstory.value.trim(),5000);
+    closePlayerModal();
+    renderLaunch();
+    storageSave();
+    addMessage('sower','🎮 玩家角色「'+name+'」已设定。');
+  });
+  el.btnPlayerClose.addEventListener('click',closePlayerModal);
 
   let editingQuestIdx=null;
   function openQuestModal(idx){
@@ -877,16 +981,12 @@ ${targetHint}
   // ===== 返回创世模式 =====
   el.backBtn.addEventListener('click', () => {
     state.mode = 'creation';
-    updatePanelVisibility();
     if (clockInterval) clearInterval(clockInterval);
     stopAutoLoop();
     state.play.typingPause = false;
-    if (state.launched) {
-      el.mainPanel.classList.add('panel-hidden');
-      el.rightPanel.classList.add('panel-hidden');
-      el.playPanel.classList.remove('panel-hidden');
-      renderPlayMode();
-    }
+    updatePanelVisibility();
+    renderAll();
+    switchTab('bible');
   });
 
   // ===== 新建世界 =====
@@ -929,6 +1029,59 @@ ${targetHint}
       }
     });
   }
+
+  // ===== 多标签页同步 =====
+  // 后台标签页暂停世界流动；回到前台或检测到别的标签页删了世界时，重新从存储同步
+  async function resyncFromStorage() {
+    let wl = null;
+    try { wl = await vectraStorage.loadWorldList(); } catch (_) {}
+    if (!wl || !Array.isArray(wl.worlds)) return false;
+    const remoteIds = wl.worlds.map(w => w.id);
+    const localIds = state.worlds.map(w => w.id);
+    // 仅当别处删除了本地仍在的世界时才重载（避免覆盖未保存的编辑）
+    const deletedElsewhere = localIds.some(id => !remoteIds.includes(id));
+    if (!deletedElsewhere) return false;
+    state.worlds = wl.worlds;
+    if (!state.currentWorld || !state.worlds.some(w => w.id === state.currentWorld)) {
+      state.currentWorld = (state.worlds.some(w => w.id === wl.currentWorld) ? wl.currentWorld : (state.worlds[0]?.id)) || null;
+    }
+    if (state.currentWorld) {
+      await storageLoadWorld(state.currentWorld);
+    } else {
+      state.phase=1; state.bible={lore:'',laws:[],era:''}; state.player={name:'',role:'',backstory:''};
+      state.npcs=[]; state.quests=[]; state.messages=[]; state.launched=false;
+      state.play.events=[]; state.play.scene=[]; state.play.clock={day:1,hour:0,minute:0};
+    }
+    return true;
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (clockInterval) clearInterval(clockInterval);
+      stopAutoLoop();
+      state.play.typingPause = false;
+    } else {
+      resyncFromStorage().then(() => {
+        if (state.mode === 'play' && state.launched) {
+          switchMode('play');   // 恢复时钟与自动交流
+        } else {
+          updatePanelVisibility();
+          renderAll();
+        }
+      });
+    }
+  });
+
+  // 其他标签页删除世界后，本标签页同步移除，避免旧数据重新上传
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'vectra_data' || document.hidden) return;
+    resyncFromStorage().then(changed => {
+      if (!changed) return;
+      updatePanelVisibility();
+      renderAll();
+      if (state.mode === 'play' && state.launched) switchMode('play');
+    });
+  });
 
   // ===== 初始化 =====
   async function init() {

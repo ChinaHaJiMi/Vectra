@@ -401,6 +401,17 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
             safe_path = safe_path_join(DATA_DIR, 'worlds', world_id)
             if os.path.exists(safe_path):
                 shutil.rmtree(safe_path)
+            # 同步从世界列表移除，避免删除后刷新又重新出现
+            list_file = os.path.join(DATA_DIR, 'worlds.json')
+            data = self._read_json_file(list_file)
+            if data and isinstance(data.get('worlds'), list):
+                before = len(data['worlds'])
+                data['worlds'] = [w for w in data['worlds'] if w.get('id') != world_id]
+                if data.get('currentWorld') == world_id:
+                    data['currentWorld'] = data['worlds'][0]['id'] if data['worlds'] else None
+                if len(data['worlds']) != before:
+                    data['updatedAt'] = datetime.utcnow().isoformat() + 'Z'
+                    self._write_json_file(list_file, data)
             self._send_json({"ok": True})
         except ValueError:
             self._send_json({"error": "invalid world id"}, 400)

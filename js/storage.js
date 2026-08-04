@@ -148,6 +148,18 @@ class VectraStorage {
       try { await this._apiPOST(`/api/deleteWorld/${worldId}`); } catch (_) {}
     }
     localStorage.removeItem(`vectra_world_${worldId}`);
+    // 同步从本地世界列表移除
+    try {
+      const r = localStorage.getItem('vectra_data');
+      if (r) {
+        const data = JSON.parse(r);
+        data.worlds = (data.worlds || []).filter(w => w.id !== worldId);
+        if (data.currentWorld === worldId) {
+          data.currentWorld = data.worlds.length ? data.worlds[0].id : null;
+        }
+        localStorage.setItem('vectra_data', JSON.stringify(data));
+      }
+    } catch (_) {}
   }
 
   // ===== NPC 记忆 =====
