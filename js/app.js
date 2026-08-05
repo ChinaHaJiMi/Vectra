@@ -276,8 +276,8 @@ document.addEventListener('DOMContentLoaded', () => {
         <span class="npc-loc" style="margin-left:auto;font-size:10px;color:var(--text-muted);">${n.location?Sanitize.htmlEncode(n.location):''}</span>
       </div>`
     ).join('');
-    // 居民列表仅作展示，使用 @名字 语法进行对话
-    el.pactiveNpc.textContent = '💬 使用 @名字 或直接输入';
+    // 居民列表仅作展示，直接输入即与在场所有人对话
+    el.pactiveNpc.textContent = '💬 直接输入，所有在场 NPC 都会回应';
   }
 
   function addSceneMsg(type, content) {
@@ -332,30 +332,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ===== 消息解析与 NPC AI 对话 =====
-  // 语法：
-  //   普通文本          → 广播给所有在场 NPC
-  //   @NPC名 + 文本     → 仅对指定 NPC 说
-  //   /NPC名 方式 + 文  → 用特殊方式（短信/电话等）联系不在场的人
-  function _parseMessage(text) {
-    // 匹配 @名字 或 /名字 方式
-    const atMatch = text.match(/^@(\S+?)(?:\s|$)([\s\S]*)$/);
-    const slashMatch = text.match(/^\/(\S+?)\s+(\S+?)\s+([\s\S]*)$/);
-    
-    if (slashMatch) {
-      const targetName = _sanitizeInput(slashMatch[1].trim(), 50);
-      const method = _sanitizeInput(slashMatch[2].trim(), 50);
-      const msg = _sanitizeInput(slashMatch[3].trim(), 5000);
-      return { type: 'special', targetName, method, msg };
-    }
-    if (atMatch) {
-      const targetName = _sanitizeInput(atMatch[1].trim(), 50);
-      const msg = _sanitizeInput(atMatch[2].trim(), 5000);
-      return { type: 'direct', targetName, msg };
-    }
-    return { type: 'broadcast', msg: text };
-  }
-
+  // ===== NPC AI 对话 =====
   async function _replyNpc(npc, userMsg, method) {
     const longMem = await vectraStorage.loadNPCMemory(state.currentWorld, npc.id) || '';
     const shortMem = npc._shortMem || '';
@@ -407,14 +384,19 @@ ${methodHint}
     addSceneMsg('narrator', npc.name + ' 正在思考…');
 
     const reply = await callLLM([
-      { role: 'system', content: '当前时间：' + nowClock + '\n\n正在和你交谈的人是「' + playerName + '」' + playerDesc + '。\n\n以下是刚才发生的对话（带时间戳）：\n' + sceneContext + '\n\n现在回应对方。' },
+      { role: 'system', content: '当前时间：' + nowClock + '\n\n你现在的身份是「' + npc.name + '」，你是「' + npc.name + '」，不是任何其他人。正在和你交谈的是另一位人物「' + playerName + '」' + playerDesc + '，他不是你，你不叫' + playerName + '。\n\n以下是刚才发生的对话（带时间戳）：\n' + sceneContext + '\n\n请以「' + npc.name + '」的第一人称回应对方。' },
       { role: 'user', content: userMsg }
     ], systemP);
 
     state.play.scene = state.play.scene.filter(s => !s.content.includes('正在思考…'));
 
-    const NPC_PREFIX = npc.name + '：';
-    const cleanReply = reply.replace(/^(你：|NPC：|)/, '').replace(NPC_PREFIX, '').trim();
+    const escNpc = npc.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escPlayer = playerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const cleanReply = reply
+      .replace(/^(你：|NPC：)/, '')
+      .replace(new RegExp('^' + escPlayer + '：'), '')
+      .replace(new RegExp('^' + escNpc + '：'), '')
+      .trim();
     const prefix = method ? `${npc.name}（${npcLoc} · ${method}）：` : `${npc.name}（${npcLoc}）：`;
     addSceneMsg('npc', prefix + cleanReply);
     addEvent(npc.name + (method ? `通过${method}` : '') + ' 回话了', npc.name);
@@ -435,7 +417,7 @@ ${methodHint}
       `[${s.time || nowClock}][${s.type}] ${s.content}`
     ).join('\n');
     const targetHint = targetNpc
-      ? `你身边是「${targetNpc.name}」，你想主动跟他聊几句。`
+      ? `你身边是「${targetNpc.name}」，你想主动跟他聊几句。（注意：你是「${npc.name}」，不是「${targetNpc.name}」，别把自己当成他）`
       : '你独自待着，自然地自言自语几句。';
     const kindHint = npc.kind === 'plot'
       ? '你是与这个世界核心故事线相关的剧情角色。'
@@ -519,55 +501,22 @@ ${targetHint}
     // 玩家行动完成，世界恢复流动
     state.play.typingPause = false;
 
-    const parsed = _parseMessage(_sanitizeInput(raw, 5000));
+    const msg = _sanitizeInput(raw, 5000);
     const playerName = (state.player && state.player.name) || '你';
 
-    if (parsed.type === 'broadcast') {
-      // 广播：对所有人说
-      addSceneMsg('player', playerName + '：' + parsed.msg);
-      addEvent('你: ' + parsed.msg.slice(0, 50));
+    // 广播：对所有人说
+    addSceneMsg('player', playerName + '：' + msg);
+    addEvent('你: ' + msg.slice(0, 50));
 
-      if (state.npcs.length === 0) {
-        addSceneMsg('narrator', '四周静悄悄的，没有人在附近。');
-        return;
-      }
+    if (state.npcs.length === 0) {
+      addSceneMsg('narrator', '四周静悄悄的，没有人在附近。');
+      return;
+    }
 
-      // 所有 NPC 依次回应
-      for (const npc of state.npcs) {
-        if (npc.online === false) continue;
-        await _replyNpc(npc, parsed.msg, null);
-      }
-
-    } else if (parsed.type === 'direct') {
-      // @NPC名：只对说话——不写入共享场景，只对目标 NPC 私下说
-      const npc = state.npcs.find(n => n.name === parsed.targetName);
-      if (!npc) {
-        addSceneMsg('player', playerName + '：' + raw);
-        addSceneMsg('narrator', `没有找到叫「${parsed.targetName}」的人。`);
-        addEvent('你尝试找 ' + parsed.targetName + ' 但没找到');
-        return;
-      }
-      // 显示"悄悄话"标记，但不写入 scene 数组（其他 NPC 看不到）
-      addSceneMsg('narrator', `💬 你对 ${npc.name} 悄悄说...`);
-      addEvent(`你对 ${npc.name} 说: ${parsed.msg.slice(0, 50)}`);
-      // 从场景中移除 narrtor 占位，用独立上下文调用
-      state.play.scene.pop();
-      await _replyNpc(npc, `[私聊] ${parsed.msg}`, '私聊');
-
-    } else if (parsed.type === 'special') {
-      // /名字 方式：特殊通信——只对目标 NPC
-      const npc = state.npcs.find(n => n.name === parsed.targetName);
-      if (!npc) {
-        addSceneMsg('player', playerName + '：' + raw);
-        addSceneMsg('narrator', `没有找到叫「${parsed.targetName}」的人。`);
-        addEvent('你尝试找 ' + parsed.targetName + ' 但没找到');
-        return;
-      }
-      // 不写入共享场景
-      addSceneMsg('narrator', `📡 你通过${parsed.method}联系 ${npc.name}...`);
-      addEvent(`你通过${parsed.method}联系 ${npc.name}: ${parsed.msg.slice(0, 50)}`);
-      state.play.scene.pop();
-      await _replyNpc(npc, `[${parsed.method}] ${parsed.msg}`, parsed.method);
+    // 所有 NPC 依次回应
+    for (const npc of state.npcs) {
+      if (npc.online === false) continue;
+      await _replyNpc(npc, msg, null);
     }
 
     storageSave();
@@ -643,15 +592,9 @@ ${targetHint}
   function renderMessages() {
     el.msgList.innerHTML = state.messages.map((m,i) =>
       `<div class="message ${m.type}">${Sanitize.htmlEncode(m.content).replace(/\n/g,'<br>')}
-        ${m.type==='sower'?`<button class="msg-edit-btn" data-idx="${i}" title="编辑">✎</button>`:''}
       </div>`
     ).join('');
     el.msgList.scrollTop = el.msgList.scrollHeight;
-    el.msgList.querySelectorAll('.msg-edit-btn').forEach(b=>b.addEventListener('click',()=>{
-      const idx=parseInt(b.dataset.idx);
-      const nc=prompt('编辑：',state.messages[idx].content);
-      if(nc!==null){state.messages[idx].content=_sanitizeInput(nc,50000);renderMessages();storageSave();}
-    }));
   }
 
   function renderWorlds() {
@@ -997,7 +940,7 @@ ${targetHint}
     if (!cleanName) return;
     const world = { id:'w'+Date.now(), name: cleanName };
     state.worlds.push(world); state.currentWorld = world.id;
-    state.phase = 1; state.bible = { lore:'', laws:[], era:'' }; state.npcs = []; state.quests = []; state.messages = [];
+    state.phase = 1; state.bible = { lore:'', laws:[], era:'' }; state.player = { name:'', role:'', backstory:'' }; state.npcs = []; state.quests = []; state.messages = [];
     state.launched = false;
     state.play.events = []; state.play.clock = { day:1, hour:0, minute:0 };
     state.play.scene = [];
@@ -1106,11 +1049,6 @@ ${targetHint}
       renderPlayMode();
       startClock();
       startAutoLoop();
-    }
-    if (state.launched) {
-      el.chatInput.disabled = true;
-      el.btnSend.disabled = true;
-      el.sowerStatus.textContent = '🔒 世界运行中 · 创世已锁定';
     }
     el.btnSend.addEventListener('click', handleSend);
     el.chatInput.addEventListener('keydown', (e) => { if (e.key==='Enter'&&!e.shiftKey) { e.preventDefault(); handleSend(); } });
