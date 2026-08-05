@@ -15,7 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
     npcs: [], quests: [], messages: [],
     // 用于给 NPC 分配初始位置的地点池
     _locationPool: ['📍 酒馆', '📍 广场', '📍 集市', '📍 铁匠铺', '📍 教堂', '📍 港口', '📍 城堡', '📍 图书馆', '📍 花园', '📍 城墙'],
-    settings: { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096, autoRate: 5 },
+    settings: { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096, autoRate: 5, directorEndpoint: '', directorKey: '', directorModel: '' },
     launched: false,
     mode: 'creation',
     play: {
@@ -45,11 +45,12 @@ document.addEventListener('DOMContentLoaded', () => {
     pworldName: $('#pworld-name'), pclock: $('#pclock'), pstatus: $('#pstatus'), plevel: $('#plevel'), pplayer: $('#pplayer'),
     pnpcList: $('#pnpc-list'), pscene: $('#pscene'), pevents: $('#pevents'),
     pinput: $('#pinput'), psend: $('#psend'), plocation: $('#plocation'), pactiveNpc: $('#pactive-npc'),
-    spdBtns: () => $$('.spd'), backBtn: $('#btn-back-creation'), btnPlayMode: $('#btn-play-mode'), btnWorldBroadcast: $('#btn-world-broadcast'),
+    spdBtns: () => $$('.spd[data-s]'), backBtn: $('#btn-back-creation'), btnPlayMode: $('#btn-play-mode'), btnWorldBroadcast: $('#btn-world-broadcast'),
     settingsAutoRate: $('#settings-autorate'),
     modalSettings: $('#modal-settings'), settingsEndpoint: $('#settings-endpoint'), settingsKey: $('#settings-key'),
     settingsModel: $('#settings-model'), settingsTemp: $('#settings-temp'), settingsTempVal: $('#settings-temp-val'),
     settingsMaxTokens: $('#settings-maxtokens'), btnSettingsTest: $('#btn-settings-test'), btnSettingsSave: $('#btn-settings-save'), btnSettingsClose: $('#btn-settings-close'),
+    settingsDirEndpoint: $('#settings-dir-endpoint'), settingsDirKey: $('#settings-dir-key'), settingsDirModel: $('#settings-dir-model'),
     modalNpc: $('#modal-npc'), npcName: $('#npc-name'), npcKind: $('#npc-kind'), npcAge: $('#npc-age'), npcRole: $('#npc-role'),
     npcPersonality: $('#npc-personality'), npcBackstory: $('#npc-backstory'), btnNpcSave: $('#btn-npc-save'), btnNpcClose: $('#btn-npc-close'),
     modalBible: $('#modal-bible'), bibleLore: $('#bible-lore'), bibleLaws: $('#bible-laws'), bibleEra: $('#bible-era'),
@@ -85,7 +86,7 @@ document.addEventListener('DOMContentLoaded', () => {
       state.npcs = d.npcs || []; state.quests = d.quests || []; state.messages = d.messages || [];
       state.launched = d.launched || false;
       state.play.events = d.playEvents || [];
-      state.play.clock = d.playClock || { day:1, hour:0, minute:0 };
+      state.play.clock = _normalizeClock(d.playClock);
       state.play.scene = d.playScene || [];
       state.play.mode = d.playMode === 'passive' ? 'passive' : 'auto';
     } else {
@@ -100,6 +101,19 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function timestamp() { return new Date().toTimeString().slice(0, 8); }
+
+  // 时钟归正：把可能被写坏的 day/hour/minute 重新归一化（防分钟>=60）
+  function _normalizeClock(c) {
+    c = c || {};
+    let day = Number(c.day) || 1;
+    let hour = Number(c.hour) || 0;
+    let minute = Number(c.minute) || 0;
+    hour += Math.floor(minute / 60);
+    minute = minute % 60;
+    day += Math.floor(hour / 24);
+    hour = hour % 24;
+    return { day: Math.max(1, day), hour, minute };
+  }
 
   // ===== 安全工具（使用 Sanitize 模块） =====
   function _isSafeUrl(urlString) {
@@ -130,6 +144,64 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
       return data.choices?.[0]?.message?.content || '（没有回复）';
     } catch(e) { return '❌ 网络错误，请检查网络连接或 API 端点地址。'; }
+  }
+
+  // ===== 导演 AI：决定这次由谁回话 =====
+  // 使用独立 API（未配置时回退主 API）；失败时返回 null 由调用方回退
+  async function callDirector(speakerLabel, message, sceneContext) {
+    const s = state.settings;
+    const dEndpoint = s.directorEndpoint || s.endpoint;
+    const dKey = s.directorKey || s.key;
+    const dModel = s.directorModel || s.model;
+    if (!dKey || !dModel || !_isSafeUrl(dEndpoint)) return null;
+
+    const npcList = state.npcs.filter(n => n.online !== false).map(n =>
+      `- ${n.kind === 'plot' ? '[剧情角色]' : '[紧要角色]'} ${n.name}（${n.role||'普通人'} · 性格：${n.personality||'一般'} · 位置：${n.location||'世界'}）`
+    ).join('\n');
+
+    const prompt = `你是这个 AI 世界的对话导演。由你决定哪些角色该对最新消息做出回应，其余保持沉默。
+可回应的角色：
+${npcList}
+
+最近发生的场景：
+${sceneContext}
+
+最新消息：${speakerLabel}：${message}
+
+规则：
+- 一般闲聊、面向全体的消息：只从 [紧要角色] 里选最相关的 0~2 个回应
+- [剧情角色] 只在消息点名、或与其故事线直接相关时才允许回应
+- 消息点名了某人就只让被点名者回应
+- 无关的角色一律沉默，宁缺毋滥
+只输出 JSON：{"reply": ["角色名", ...]}`;
+
+    try {
+      const endpoint = dEndpoint.replace(/\/+$/, '');
+      const res = await fetch(endpoint + '/chat/completions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + dKey },
+        body: JSON.stringify({ model: dModel, messages: [{ role: 'system', content: '你只输出 JSON，不要有多余文字。' }, { role: 'user', content: prompt }], temperature: 0.2, max_tokens: 200 }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const text = data.choices?.[0]?.message?.content || '';
+      const m = text.match(/\{[\s\S]*?\}/);
+      if (!m) return null;
+      const obj = JSON.parse(m[0]);
+      const names = Array.isArray(obj.reply) ? obj.reply : [];
+      return names.map(n => _sanitizeInput(String(n).trim(), 50)).filter(Boolean);
+    } catch(e) { return null; }
+  }
+
+  // 导演选人：返回 { repliers, directed }；导演不可用/无人选时回退到紧要 NPC
+  async function _pickRepliers(speakerLabel, message, sceneContext) {
+    const names = await callDirector(speakerLabel, message, sceneContext);
+    if (names && names.length) {
+      // 容错匹配：精确名 / 包含关系
+      const matches = state.npcs.filter(n => n.online !== false &&
+        names.some(nm => nm === n.name || nm.includes(n.name) || n.name.includes(nm)));
+      if (matches.length) return { repliers: matches, directed: true };
+    }
+    return { repliers: state.npcs.filter(n => n.online !== false && n.kind !== 'plot'), directed: false };
   }
 
   // ===== 创世模式 =====
@@ -365,11 +437,14 @@ ${locationHint}
 
 ## 扮演规则
 - 你就是${npc.name}，完完全全活在这个世界里的人
+- 你是「${npc.role || '一个普通人'}」，你的职业/身份决定你怎么看事、怎么说事
+- 你的性格底色是「${npc.personality || '和大多数人差不多'}」：说话语气、用词、态度都要像这样一个人，别丢人物感
 - 用第一人称「我」说话，口语化、自然，别像念设定
 - 说话时可以用（神态/动作）描述表情动作，例如：（叹了口气）（皱眉）（忍不住笑出声）
 ${methodHint}
 - 你对自己的世界是熟悉的，对反常的事会觉得奇怪
 - 不知道的事就说不知道，别硬编
+- 对方消息里的「我」是对方自称，是对方的言行，不是你做的，别当成自己
 - 字数控制在100字以内，一句话说完也行，不用每次都长篇大论
 - 不要提及你是AI、NPC或语言模型
 - 注意当前时间${nowClock}，你是这个世界里活生生的人，时间不同你的状态和心情也会不同`;
@@ -384,7 +459,7 @@ ${methodHint}
     addSceneMsg('narrator', npc.name + ' 正在思考…');
 
     const reply = await callLLM([
-      { role: 'system', content: '当前时间：' + nowClock + '\n\n你现在的身份是「' + npc.name + '」，你是「' + npc.name + '」，不是任何其他人。正在和你交谈的是另一位人物「' + playerName + '」' + playerDesc + '，他不是你，你不叫' + playerName + '。\n\n以下是刚才发生的对话（带时间戳）：\n' + sceneContext + '\n\n请以「' + npc.name + '」的第一人称回应对方。' },
+      { role: 'system', content: '当前时间：' + nowClock + '\n\n你现在的身份是「' + npc.name + '」，你是「' + npc.name + '」，不是任何其他人。正在和你交谈的是另一位人物「' + playerName + '」' + playerDesc + '，他不是你，你不叫' + playerName + '。对方消息里所有第一人称「我」都指「' + playerName + '」，是对方的言行，绝不是你自己的。\n\n以下是刚才发生的对话（带时间戳）：\n' + sceneContext + '\n\n请以「' + npc.name + '」的第一人称回应对方。' },
       { role: 'user', content: userMsg }
     ], systemP);
 
@@ -444,6 +519,8 @@ ${targetHint}
 
 ## 扮演规则
 - 你就是${npc.name}，活在这个世界里的人，用第一人称「我」口语化说话
+- 你是「${npc.role || '一个普通人'}」，你的职业/身份决定你怎么想事、怎么开口
+- 你的性格底色是「${npc.personality || '和大多数人差不多'}」，说话要带出这个人物的味道
 - 主动开口，说一句自然的话：寒暄、问事、聊近况都行
 - 说话时可以用（神态/动作）描述表情动作，例如：（伸了个懒腰）（望向远处）
 - 字数控制在80字以内，说一句就好，别长篇大论
@@ -463,7 +540,7 @@ ${targetHint}
     if (_autoBusy) return;
     _autoBusy = true;
     try {
-      const online = state.npcs.filter(n => n.online !== false);
+      const online = state.npcs.filter(n => n.online !== false && n.kind !== 'plot');
       if (online.length < 2) return;
 
       // 严格地点限制：只有位于同一地点的 NPC 才会互相交谈
@@ -513,16 +590,26 @@ ${targetHint}
       return;
     }
 
-    // 所有 NPC 依次回应
-    for (const npc of state.npcs) {
-      if (npc.online === false) continue;
-      await _replyNpc(npc, msg, null);
+    // 导演 AI 决定谁该回应，避免无关 NPC 插话
+    addSceneMsg('narrator', '🎬 导演判定中…');
+    const sceneContext = state.play.scene.slice(-10).map(s => `[${s.time || ''}][${s.type}] ${s.content}`).join('\n');
+    const { repliers, directed } = await _pickRepliers(playerName, msg, sceneContext);
+    state.play.scene = state.play.scene.filter(s => !s.content.includes('导演判定中…'));
+
+    if (directed && repliers.length === 0) {
+      addSceneMsg('narrator', '四周一片沉默，无人回应。');
+    } else if (directed) {
+      addSceneMsg('narrator', '🎬 回应者：' + repliers.map(n => n.name).join('、'));
+    }
+
+    for (const npc of repliers) {
+      await _replyNpc(npc, `「${playerName}」对你说：${msg}`, null);
     }
 
     storageSave();
   }
 
-  // ===== 世界广播：向整个世界推送事件，所有在线 NPC 会做出反应 =====
+  // ===== 世界广播：向整个世界推送事件，由导演挑选 NPC 反应 =====
   async function _broadcastEvent(text) {
     const msg = _sanitizeInput(text.trim(), 2000);
     if (!msg) return;
@@ -533,7 +620,15 @@ ${targetHint}
       addSceneMsg('narrator', '世界安静得可怕，没有回应。');
       return;
     }
-    for (const npc of online) {
+    // 导演 AI 挑选对事件做出反应的角色
+    const sceneContext = state.play.scene.slice(-10).map(s => `[${s.time || ''}][${s.type}] ${s.content}`).join('\n');
+    const { repliers } = await _pickRepliers('世界事件', msg, sceneContext);
+    if (repliers.length === 0) {
+      addSceneMsg('narrator', '世界沉默了一瞬，无人对此做出反应。');
+    } else {
+      addSceneMsg('narrator', '🎬 反应者：' + repliers.map(n => n.name).join('、'));
+    }
+    for (const npc of repliers) {
       await _replyNpc(npc, '[世界事件] ' + msg + '——你对这件事做出反应。', null);
     }
     storageSave();
@@ -574,12 +669,14 @@ ${targetHint}
     clockInterval = setInterval(() => {
       if (document.hidden) return;   // 后台标签页暂停时间流动
       if (!state.play.running || state.play.typingPause) return;
-      state.play.clock.minute += state.play.speed;
+      const speed = Number(state.play.speed) || 0;
+      if (speed <= 0) return;
+      state.play.clock.minute = (Number(state.play.clock.minute) || 0) + speed;
       if (state.play.clock.minute >= 60) {
-        state.play.clock.minute -= 60;
-        state.play.clock.hour++;
-        if (state.play.clock.hour >= 24) {
-          state.play.clock.hour = 0;
+        state.play.clock.hour += Math.floor(state.play.clock.minute / 60);
+        state.play.clock.minute = Math.floor(state.play.clock.minute % 60);
+        while (state.play.clock.hour >= 24) {
+          state.play.clock.hour -= 24;
           state.play.clock.day++;
           addEvent(`📅 第${state.play.clock.day}日到来`);
         }
@@ -851,6 +948,7 @@ ${targetHint}
     const s=state.settings;el.settingsEndpoint.value=s.endpoint;el.settingsKey.value=s.key;el.settingsModel.value=s.model;
     el.settingsTemp.value=s.temperature;el.settingsTempVal.textContent=s.temperature;el.settingsMaxTokens.value=s.maxTokens;
     el.settingsAutoRate.value=s.autoRate!=null?s.autoRate:5;
+    el.settingsDirEndpoint.value=s.directorEndpoint||'';el.settingsDirKey.value=s.directorKey||'';el.settingsDirModel.value=s.directorModel||'';
     el.modalSettings.style.display='flex';
   }
   function closeSettingsModal(){el.modalSettings.style.display='none';}
@@ -869,6 +967,7 @@ ${targetHint}
   });
   el.btnSettingsSave.addEventListener('click',()=>{
     const rawEndpoint=el.settingsEndpoint.value.trim().replace(/\/+$/,'');
+    const rawDirEndpoint=el.settingsDirEndpoint.value.trim().replace(/\/+$/,'');
     state.settings={
       endpoint: _sanitizeInput(rawEndpoint, 500),
       key: el.settingsKey.value.trim(),
@@ -876,6 +975,9 @@ ${targetHint}
       temperature: parseFloat(el.settingsTemp.value) || 0.8,
       maxTokens: parseInt(el.settingsMaxTokens.value) || 4096,
       autoRate: Math.max(0, parseInt(el.settingsAutoRate.value, 10) || 5),
+      directorEndpoint: _sanitizeInput(rawDirEndpoint, 500),
+      directorKey: el.settingsDirKey.value.trim(),
+      directorModel: _sanitizeInput(el.settingsDirModel.value.trim(), 200),
     };
     vectraStorage.saveSettings(state.settings);closeSettingsModal();addMessage('sower','⚙ API 设置已保存。');
   });
@@ -905,12 +1007,13 @@ ${targetHint}
     storageSave();
   });
 
-  // ===== 倍速控制 =====
+  // ===== 倍速控制（1×=64 游戏分钟/秒）=====
   el.spdBtns().forEach(btn => {
     btn.addEventListener('click', () => {
       el.spdBtns().forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      state.play.speed = parseFloat(btn.dataset.s);
+      const factor = parseFloat(btn.dataset.s);
+      state.play.speed = 64 * (Number.isFinite(factor) ? factor : 1);
     });
   });
 

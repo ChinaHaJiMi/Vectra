@@ -167,6 +167,11 @@
         <label class="field-label">Max Tokens</label><input type="number" id="settings-maxtokens" class="field-input" value="4096">
         <label class="field-label">自动交流频率</label>
         <div class="range-row"><input type="number" id="settings-autorate" class="field-input" min="0" max="60" value="5" style="width:80px;"><span style="font-size:11px;color:var(--text-muted);">次/分钟 · 0=关闭自动交流（仅 Auto 模式生效）</span></div>
+        <div class="field-hint" style="margin-top:12px;border-top:1px solid var(--border-color);padding-top:10px;">— 🎬 回复控制 AI（导演，可选）—</div>
+        <div class="field-hint">导演决定每次对话由谁回应，避免无关 NPC 插话、认错人。留空则复用上方 API。</div>
+        <label class="field-label">导演 AI 端点</label><input type="text" id="settings-dir-endpoint" class="field-input" placeholder="留空复用上方端点">
+        <label class="field-label">导演 AI Key</label><input type="password" id="settings-dir-key" class="field-input" placeholder="留空复用上方 Key">
+        <label class="field-label">导演 AI 模型</label><input type="text" id="settings-dir-model" class="field-input" placeholder="留空复用上方模型">
         <div class="field-hint">播种者与NPC世界系统将使用此配置调用 LLM。</div>
       </div>
       <div class="modal-footer"><button id="btn-settings-test" class="btn-test">测试连接</button><button id="btn-settings-save" class="btn-primary">保存</button></div>
@@ -245,6 +250,6 @@
   <script src="js/trex/runner.js?v=1"></script>
   <script src="js/trex.js?v=1"></script>
   <script src="js/fireworks.js?v=1"></script>
-  <script src="js/app.js?v=15"></script>
+  <script src="js/app.js?v=18"></script>
 </body>
 </html>

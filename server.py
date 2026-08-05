@@ -358,6 +358,7 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({
                 "phase": meta.get("phase", 1),
                 "bible": meta.get("bible", {"lore": "", "laws": [], "era": ""}),
+                "player": meta.get("player", {"name": "", "role": "", "backstory": ""}),
                 "npcs": npcs or [],
                 "quests": quests or [],
                 "messages": msgs or [],
@@ -365,6 +366,7 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
                 "playEvents": play_events or [],
                 "playScene": play_scene or [],
                 "playClock": meta.get("playClock", {"day": 1, "hour": 0, "minute": 0}),
+                "playMode": meta.get("playMode", "auto"),
                 "npcsConfirmed": meta.get("npcsConfirmed", False),
                 "questsConfirmed": meta.get("questsConfirmed", False),
             })
@@ -378,8 +380,10 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
         self._write_json_file(os.path.join(world_dir, 'meta.json'), {
             "phase": data.get("phase", 1),
             "bible": data.get("bible", {"lore": "", "laws": [], "era": ""}),
+            "player": data.get("player", {"name": "", "role": "", "backstory": ""}),
             "launched": data.get("launched", False),
             "playClock": data.get("playClock", {"day": 1, "hour": 0, "minute": 0}),
+            "playMode": data.get("playMode", "auto"),
             "npcsConfirmed": data.get("npcsConfirmed", False),
             "questsConfirmed": data.get("questsConfirmed", False),
         })

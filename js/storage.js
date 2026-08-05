@@ -188,6 +188,9 @@ class VectraStorage {
     if (store.key) {
       store.key = this._obfuscate(store.key);
     }
+    if (store.directorKey) {
+      store.directorKey = this._obfuscate(store.directorKey);
+    }
     localStorage.setItem('vectra_settings', JSON.stringify(store));
   }
 
@@ -199,10 +202,13 @@ class VectraStorage {
         if (s.key) {
           s.key = this._deobfuscate(s.key) || s.key;
         }
+        if (s.directorKey) {
+          s.directorKey = this._deobfuscate(s.directorKey) || s.directorKey;
+        }
         return s;
       }
     } catch (_) {}
-    return { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096, autoRate: 5 };
+    return { endpoint: 'https://api.openai.com/v1', key: '', model: '', temperature: 0.8, maxTokens: 4096, autoRate: 5, directorEndpoint: '', directorKey: '', directorModel: '' };
   }
 }
 
