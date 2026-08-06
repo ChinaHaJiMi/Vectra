@@ -218,6 +218,13 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
                 self._handle_load_npc_memory(parts[0], parts[1])
             else:
                 self._send_json({"error": "invalid path"}, 400)
+        elif parsed.path.startswith('/api/npcMemory/'):
+            parts = parsed.path.split('/api/npcMemory/')[1].split('/')
+            # /api/npcMemory/{world}/{npc}/index
+            if len(parts) == 3 and parts[2] == 'index' and validate_world_id(parts[0]) and validate_npc_id(parts[1]):
+                self._handle_load_npc_memory_index(parts[0], parts[1])
+            else:
+                self._send_json({"error": "invalid path"}, 400)
         else:
             super().do_GET()
 
@@ -260,6 +267,17 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
             parts = parsed.path.split('/api/saveNPCMemory/')[1].split('/')
             if len(parts) == 2 and validate_world_id(parts[0]) and validate_npc_id(parts[1]):
                 self._handle_save_npc_memory(parts[0], parts[1], parsed_body)
+            else:
+                self._send_json({"error": "invalid path"}, 400)
+        elif parsed.path.startswith('/api/npcMemory/'):
+            parts = parsed.path.split('/api/npcMemory/')[1].split('/')
+            if len(parts) == 3 and validate_world_id(parts[0]) and validate_npc_id(parts[1]):
+                if parts[2] == 'append':
+                    self._handle_append_npc_memory(parts[0], parts[1], parsed_body)
+                elif parts[2] == 'query':
+                    self._handle_query_npc_memory(parts[0], parts[1], parsed_body)
+                else:
+                    self._send_json({"error": "unknown action"}, 400)
             else:
                 self._send_json({"error": "invalid path"}, 400)
         elif parsed.path.startswith('/api/deleteWorld/'):
@@ -430,6 +448,170 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
         mem_file = os.path.join(DATA_DIR, 'worlds', world_id, 'memories', f'{npc_id}.md')
         self._write_text_file(mem_file, data.get("text", ""))
         self._send_json({"ok": True})
+
+    def _mem_dir(self, world_id, npc_id):
+        return os.path.join(DATA_DIR, 'worlds', world_id, 'memories')
+
+    def _mem_jsonl_path(self, world_id, npc_id):
+        return os.path.join(self._mem_dir(world_id, npc_id), f'{npc_id}.mem.jsonl')
+
+    def _mem_index_path(self, world_id, npc_id):
+        return os.path.join(self._mem_dir(world_id, npc_id), f'{npc_id}.index.json')
+
+    def _read_mem_jsonl(self, world_id, npc_id):
+        import json as _json
+        path = self._mem_jsonl_path(world_id, npc_id)
+        entries = []
+        try:
+            safe_path = safe_path_join(DATA_DIR, os.path.relpath(path, DATA_DIR))
+            with open(safe_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            entries.append(_json.loads(line))
+                        except _json.JSONDecodeError:
+                            continue
+        except (FileNotFoundError, ValueError):
+            pass
+        return entries
+
+    def _write_mem_jsonl(self, world_id, npc_id, entries):
+        import json as _json
+        path = self._mem_jsonl_path(world_id, npc_id)
+        try:
+            safe_path = safe_path_join(DATA_DIR, os.path.relpath(path, DATA_DIR))
+            self._ensure_dir(os.path.dirname(safe_path))
+            with open(safe_path, 'w', encoding='utf-8') as f:
+                for e in entries:
+                    f.write(_json.dumps(e, ensure_ascii=False) + '\n')
+        except ValueError:
+            logger.error(f"[SECURITY] 路径遍历尝试: {path}")
+
+    def _build_mem_index(self, entries):
+        by_tag = {}
+        by_importance = {}
+        ids = []
+        for e in entries:
+            eid = e.get('id', '')
+            ids.append(eid)
+            for t in (e.get('tags') or []):
+                t = str(t).strip()
+                if t:
+                    by_tag.setdefault(t, []).append(eid)
+            lvl = e.get('importance', 0)
+            by_importance.setdefault(str(lvl), []).append(eid)
+        return {
+            'version': 2,
+            'updated': int(time.time() * 1000),
+            'total': len(entries),
+            'byTag': by_tag,
+            'byTime': ids[::-1],
+            'byImportance': by_importance,
+        }
+
+    def _query_mem_index(self, index, query):
+        by_tag = index.get('byTag', {})
+        by_importance = index.get('byImportance', {})
+        by_time = index.get('byTime', [])
+        want_tags = set((query.get('tags') or []))
+        min_imp = query.get('minImportance', 0)
+        max_chars = query.get('maxChars', 1500)
+        recent_n = query.get('recent', 5)
+
+        # 权重合并
+        scored = {}
+        # A. recent byTime
+        for i, eid in enumerate(by_time[:recent_n]):
+            scored[eid] = scored.get(eid, 0) + 1.0 - i * 0.1
+        # B. tag matches
+        for t in want_tags:
+            for eid in by_tag.get(t, []):
+                scored[eid] = scored.get(eid, 0) + 1.5
+        # C. high importance
+        for lvl_s, eids in by_importance.items():
+            try:
+                lvl = int(lvl_s)
+                if lvl >= max(7, min_imp):
+                    for eid in eids:
+                        scored[eid] = scored.get(eid, 0) + 1.2
+            except ValueError:
+                pass
+
+        # 排序并截断
+        ordered = sorted(scored.keys(), key=lambda eid: scored[eid], reverse=True)
+        # 映射回条目
+        return ordered, scored
+
+    def _handle_append_npc_memory(self, world_id, npc_id, data):
+        import json as _json
+        data = sanitize_json_data(data)
+        entries = data.get('entries') or []
+        if not isinstance(entries, list):
+            self._send_json({"error": "entries must be a list"}, 400)
+            return
+        existing = self._read_mem_jsonl(world_id, npc_id)
+        existing.extend(entries)
+        self._write_mem_jsonl(world_id, npc_id, existing)
+        index = self._build_mem_index(existing)
+        self._write_json_file(self._mem_index_path(world_id, npc_id), index)
+        self._send_json({"ok": True, "index": index})
+
+    def _handle_load_npc_memory_index(self, world_id, npc_id):
+        jsonl_path = self._mem_jsonl_path(world_id, npc_id)
+        index = self._read_json_file(self._mem_index_path(world_id, npc_id))
+        has_jsonl = os.path.exists(jsonl_path)
+        if not index and not has_jsonl:
+            # migration: old .md -> .jsonl + .index.json
+            mem_file = os.path.join(DATA_DIR, 'worlds', world_id, 'memories', f'{npc_id}.md')
+            text = self._read_text_file(mem_file)
+            if text:
+                lines = [l.strip() for l in text.splitlines() if l.strip()]
+                ts_now = int(time.time() * 1000)
+                entries = []
+                for i, line in enumerate(lines):
+                    entries.append({
+                        'id': f'mig_{ts_now}_{i}',
+                        'ts': ts_now + i,
+                        'time': line[:20] if len(line) > 20 else '',
+                        'type': 'observation',
+                        'tags': ['migrated'],
+                        'content': line,
+                        'importance': 5,
+                        'source': 'md_migration'
+                    })
+                self._write_mem_jsonl(world_id, npc_id, entries)
+                index = self._build_mem_index(entries)
+                self._write_json_file(self._mem_index_path(world_id, npc_id), index)
+        if not index:
+            entries = self._read_mem_jsonl(world_id, npc_id)
+            index = self._build_mem_index(entries)
+        entries = self._read_mem_jsonl(world_id, npc_id)
+        self._send_json({"index": index, "entries": entries})
+
+    def _handle_query_npc_memory(self, world_id, npc_id, data):
+        data = sanitize_json_data(data)
+        entries = self._read_mem_jsonl(world_id, npc_id)
+        if not entries:
+            index = self._build_mem_index(entries)
+            self._send_json({"matched": [], "index": index})
+            return
+        index = self._build_mem_index(entries)
+        ordered, scored = self._query_mem_index(index, data)
+        entry_map = {e.get('id', ''): e for e in entries}
+        matched = []
+        total = 0
+        max_chars = data.get('maxChars', 1500)
+        for eid in ordered:
+            e = entry_map.get(eid)
+            if not e:
+                continue
+            text = e.get('content', '')
+            if total + len(text) > max_chars:
+                break
+            matched.append(e)
+            total += len(text)
+        self._send_json({"matched": matched, "index": index})
 
 
 if __name__ == '__main__':

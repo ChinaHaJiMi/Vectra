@@ -52,7 +52,9 @@ document.addEventListener('DOMContentLoaded', () => {
     settingsMaxTokens: $('#settings-maxtokens'), btnSettingsTest: $('#btn-settings-test'), btnSettingsSave: $('#btn-settings-save'), btnSettingsClose: $('#btn-settings-close'),
     settingsDirEndpoint: $('#settings-dir-endpoint'), settingsDirKey: $('#settings-dir-key'), settingsDirModel: $('#settings-dir-model'),
     modalNpc: $('#modal-npc'), npcName: $('#npc-name'), npcKind: $('#npc-kind'), npcAge: $('#npc-age'), npcRole: $('#npc-role'),
-    npcPersonality: $('#npc-personality'), npcBackstory: $('#npc-backstory'), btnNpcSave: $('#btn-npc-save'), btnNpcClose: $('#btn-npc-close'),
+    npcPersonality: $('#npc-personality'), npcBackstory: $('#npc-backstory'),
+    npcSpeechStyle: $('#npc-speech-style'), npcVerbalTic: $('#npc-verbal-tic'), npcHabitAction: $('#npc-habit-action'),
+    btnNpcSave: $('#btn-npc-save'), btnNpcClose: $('#btn-npc-close'),
     modalBible: $('#modal-bible'), bibleLore: $('#bible-lore'), bibleLaws: $('#bible-laws'), bibleEra: $('#bible-era'),
     btnBibleSave: $('#btn-bible-save'), btnBibleClose: $('#btn-bible-close'),
     modalPlayer: $('#modal-player'), playerName: $('#player-name'), playerRole: $('#player-role'), playerBackstory: $('#player-backstory'),
@@ -357,10 +359,27 @@ ${sceneContext}
     renderScene();
   }
 
+  // 把 NPC/玩家回复里的「（神态/动作）」 解析为可样式化
+  function _formatSceneContent(s) {
+    const safe = Sanitize.htmlEncode(s.content);
+    if (s.type !== 'npc' && s.type !== 'player') return safe;
+    const actRe = /^(（[^）]*\)|\([^)]*\))/;  // 前导一个（…）或 (…)
+    let actHTML = '';
+    let rest = safe;
+    let m;
+    while ((m = rest.match(actRe))) {
+      actHTML += `<span class="act">${m[1]}</span>`;
+      rest = rest.slice(m[0].length).trim();
+      if (!rest) break;
+    }
+    if (rest) return actHTML + `<span class="speech">${rest}</span>`;
+    return actHTML;
+  }
+
   function renderScene() {
     el.pscene.innerHTML = state.play.scene.length === 0
       ? '<div class="scene-empty">点击居民或事件开始互动</div>'
-      : state.play.scene.map(s => `<div class="scene-msg ${s.type}">${Sanitize.htmlEncode(s.content)}</div>`).join('');
+      : state.play.scene.map(s => `<div class="scene-msg ${s.type}">${_formatSceneContent(s)}</div>`).join('');
     el.pscene.scrollTop = el.pscene.scrollHeight;
   }
 
@@ -406,61 +425,81 @@ ${sceneContext}
 
   // ===== NPC AI 对话 =====
   async function _replyNpc(npc, userMsg, method) {
-    const longMem = await vectraStorage.loadNPCMemory(state.currentWorld, npc.id) || '';
-    const shortMem = npc._shortMem || '';
     const nowClock = formatClock();
     const npcLoc = npc.location || state.play.location;
+    const playerName = (state.player && state.player.name) || '旅人';
+    const playerDesc = (state.player && state.player.role) ? `（${state.player.role}）` : '';
 
     const methodHint = method ? `（对方通过${method}联系你）` : '（对方就在你面前）';
-    const locationHint = `你的位置：${npcLoc}`;
     const kindHint = npc.kind === 'plot'
-      ? '你是与这个世界核心故事线相关的剧情角色。'
+      ? '你是与这个世界核心故事线相关的剧情角色，对世界的秘密有所了解。'
       : '你是这个世界的重要人物，居民们对你很熟悉。';
+    const speechStyle = npc.speechStyle || '自然口语，说话不做作';
+    const verbalTic = npc.verbalTic ? '（夹杂习惯用语：' + npc.verbalTic + '）' : '';
+    const habitAction = npc.habitAction ? '习惯动作：' + npc.habitAction : '习惯动作：无';
+
+    // 结构化记忆检索 → 只喂相关片段
+    const keywords = vectraStorage._extractKeywords(userMsg);
+    const qTags = [playerName, npcLoc, npc.name];
+    const relevant = await vectraStorage.queryNPCMemory(state.currentWorld, npc.id, {
+      tags: qTags, keywords, maxChars: 1500
+    }) || [];
+    const shortMem = npc._shortMem || '';
+    const longMemBlock = relevant.length
+      ? '相关记忆：\n' + relevant.map(e => `- [${e.time || formatClock()}][${(e.tags||[]).join(',')}] ${e.content}`).join('\n')
+      : '暂无直接相关记忆，但你可以结合你的经验判断。';
 
     const systemP = `## 世界背景
 ${state.bible.lore || '一个普通的现代世界'}
 纪元：${state.bible.era || '当代'}
+法则：${(state.bible.laws || []).join('；') || '无特殊'}
 
 ## 你的身份
 你是「${npc.name}」，${npc.role || '一个普通人'}。
 ${kindHint}
-你的性格：${npc.personality || '和大多数人差不多'}
-你的经历：${npc.backstory || '过着平凡的生活'}
+性格：${npc.personality || '和大多数人差不多'}
+经历：${npc.backstory || '过着平凡的生活'}
+
+## 你的行为契约
+- 说话风格：${speechStyle}
+${verbalTic}
+- ${habitAction}
+- 每次回复先做一个小动作表达神态，再开口说话
 
 ## 你记得的事
-${shortMem ? '最近发生的事：\n' + shortMem : '今天没什么特别的。'}
-${longMem ? '\n你更久远的记忆：\n' + longMem : ''}
+${shortMem ? '最近发生的事：\n' + shortMem : '最近没什么特别的。'}
+${longMemBlock ? '\n' + longMemBlock : ''}
 
 ## 现在的场景
 当前时间：${nowClock}
-${locationHint}
+你的位置：${npcLoc}
+${methodHint}
 
 ## 扮演规则
-- 你就是${npc.name}，完完全全活在这个世界里的人
-- 你是「${npc.role || '一个普通人'}」，你的职业/身份决定你怎么看事、怎么说事
-- 你的性格底色是「${npc.personality || '和大多数人差不多'}」：说话语气、用词、态度都要像这样一个人，别丢人物感
-- 用第一人称「我」说话，口语化、自然，别像念设定
-- 说话时可以用（神态/动作）描述表情动作，例如：（叹了口气）（皱眉）（忍不住笑出声）
-${methodHint}
-- 你对自己的世界是熟悉的，对反常的事会觉得奇怪
-- 不知道的事就说不知道，别硬编
-- 对方消息里的「我」是对方自称，是对方的言行，不是你做的，别当成自己
-- 字数控制在100字以内，一句话说完也行，不用每次都长篇大论
-- 不要提及你是AI、NPC或语言模型
-- 注意当前时间${nowClock}，你是这个世界里活生生的人，时间不同你的状态和心情也会不同`;
+1. 你就是${npc.name}，第一人称「我」，口语化、自然，活人感，别像念设定
+2. 你的性格「${npc.personality || '和大多数人差不多'}」决定你怎么想、怎么看、怎么说话 —— 别丢人物感
+3. 先回忆再开口：你的记忆里有相关线索时，主动引用（"上次你…"，"那件事之后…"）
+4. 回复格式：（神态/动作）+ 台词，例如：（正了正帽檐）这个嘛…你说的我也想过
+5. 对反常的事觉得奇怪，不知道就说不知道，别硬编
+6. 对方消息里的「我」是对方自称，是对方的言行，不是你自己
+7. 80字以内，一句话说完也行，别长篇大论
+8. 不要提及你是AI、NPC或语言模型
+9. 注意时间${nowClock}，你的状态随时间变化`;
 
     const sceneContext = state.play.scene.slice(-10).map(s =>
       `[${s.time || nowClock}][${s.type}] ${s.content}`
     ).join('\n');
 
-    const playerName = (state.player && state.player.name) || '旅人';
-    const playerDesc = (state.player && state.player.role) ? `（${state.player.role}）` : '';
-
     addSceneMsg('narrator', npc.name + ' 正在思考…');
 
+    // 身份锁定收缩到一条 user 前缀，避免重复浪费 token
+    const identityLock = `你是「${npc.name}」，不是「${playerName}」，也不是任何其他人。` +
+      ` 正在和你对话的是「${playerName}」${playerDesc}，他不是你，你不叫${playerName}。` +
+      ` 所有第一人称「我」都是${playerName}的言行，不是你的。`;
+
     const reply = await callLLM([
-      { role: 'system', content: '当前时间：' + nowClock + '\n\n你现在的身份是「' + npc.name + '」，你是「' + npc.name + '」，不是任何其他人。正在和你交谈的是另一位人物「' + playerName + '」' + playerDesc + '，他不是你，你不叫' + playerName + '。对方消息里所有第一人称「我」都指「' + playerName + '」，是对方的言行，绝不是你自己的。\n\n以下是刚才发生的对话（带时间戳）：\n' + sceneContext + '\n\n请以「' + npc.name + '」的第一人称回应对方。' },
-      { role: 'user', content: userMsg }
+      { role: 'system', content: identityLock },
+      { role: 'user', content: `${playerName}对你说：${userMsg}\n\n刚才场景：\n${sceneContext}` }
     ], systemP);
 
     state.play.scene = state.play.scene.filter(s => !s.content.includes('正在思考…'));
@@ -476,27 +515,61 @@ ${methodHint}
     addSceneMsg('npc', prefix + cleanReply);
     addEvent(npc.name + (method ? `通过${method}` : '') + ' 回话了', npc.name);
 
-    const prevShort = npc._shortMem || '';
-    npc._shortMem = (prevShort ? prevShort + '\n' : '') + `[${formatClock()}] 有人跟你说: "${userMsg.slice(0, 30)}"`;
-    if (npc._shortMem.length > 500) npc._shortMem = npc._shortMem.slice(-500);
+    // 短记忆累积 + 触发巩固
+    _appendShortMem(npc, `${playerName}说：${userMsg.slice(0, 30)}`);
+    if (npc._shortMem && npc._shortMem.length > 450) {
+      await _tryConsolidate(npc);
+    }
     storageSave();
+  }
+
+  // 短记忆追加&裁剪
+  function _appendShortMem(npc, line) {
+    const prev = npc._shortMem || '';
+    npc._shortMem = (prev ? prev + '\n' : '') + `[${formatClock()}] ${line}`;
+    if (npc._shortMem.length > 500) npc._shortMem = npc._shortMem.slice(-500);
+  }
+
+  // 尝试把短记忆巩固到长记忆库
+  async function _tryConsolidate(npc) {
+    if (!npc.id || !state.currentWorld) return;
+    const playerName = (state.player && state.player.name) || '';
+    const entries = await vectraStorage.consolidateShortMemory(state.currentWorld, npc.id, npc._shortMem, {
+      callLLM, npcName: npc.name, playerName
+    });
+    if (entries && entries.length) {
+      addEvent(npc.name + ' 的记忆整理：' + entries.length + ' 条新长记忆');
+      npc._shortMem = '';   // 巩固后清空短记忆
+    }
   }
 
   // ===== Auto 模式：NPC 主动交流 =====
   // 让 NPC 基于当前场景主动开口说一句（不等待玩家输入）
   async function _npcAutoSay(npc, targetNpc) {
-    const longMem = await vectraStorage.loadNPCMemory(state.currentWorld, npc.id) || '';
-    const shortMem = npc._shortMem || '';
     const nowClock = formatClock();
-    const sceneContext = state.play.scene.slice(-10).map(s =>
-      `[${s.time || nowClock}][${s.type}] ${s.content}`
-    ).join('\n');
-    const targetHint = targetNpc
-      ? `你身边是「${targetNpc.name}」，你想主动跟他聊几句。（注意：你是「${npc.name}」，不是「${targetNpc.name}」，别把自己当成他）`
-      : '你独自待着，自然地自言自语几句。';
+    const npcLoc = npc.location || state.play.location;
+    const shortMem = npc._shortMem || '';
+    const playerName = (state.player && state.player.name) || '旅人';
     const kindHint = npc.kind === 'plot'
-      ? '你是与这个世界核心故事线相关的剧情角色。'
+      ? '你是与这个世界核心故事线相关的剧情角色，对世界的秘密有所了解。'
       : '你是这个世界的重要人物，居民们对你很熟悉。';
+    const speechStyle = npc.speechStyle || '自然口语，说话不做作';
+    const verbalTic = npc.verbalTic ? '（夹杂习惯用语：' + npc.verbalTic + '）' : '';
+    const habitAction = npc.habitAction ? '习惯动作：' + npc.habitAction : '习惯动作：无';
+
+    const targetHint = targetNpc
+      ? `你身边有「${targetNpc.name}」，考虑和 ta 聊几句。`
+      : '你独自待着，自然做些自言自语。';
+
+    // 结构化记忆检索
+    const keywordQuery = targetNpc ? targetNpc.name : npc.name;
+    const relevant = await vectraStorage.queryNPCMemory(state.currentWorld, npc.id, {
+      tags: [npcLoc, npc.name, targetNpc ? targetNpc.name : null].filter(Boolean),
+      keywords: vectraStorage._extractKeywords(keywordQuery), maxChars: 1200
+    }) || [];
+    const longMemBlock = relevant.length
+      ? '相关记忆：\n' + relevant.map(e => `- [${e.time || ''}] ${e.content}`).join('\n')
+      : '暂无直接相关记忆。';
 
     const systemP = `## 世界背景
 ${state.bible.lore || '一个普通的现代世界'}
@@ -505,30 +578,44 @@ ${state.bible.lore || '一个普通的现代世界'}
 ## 你的身份
 你是「${npc.name}」，${npc.role || '一个普通人'}。
 ${kindHint}
-你的性格：${npc.personality || '和大多数人差不多'}
-你的经历：${npc.backstory || '过着平凡的生活'}
+性格：${npc.personality || '和大多数人差不多'}
+经历：${npc.backstory || '过着平凡的生活'}
+
+## 你的行为契约
+- 说话风格：${speechStyle}
+${verbalTic}
+- ${habitAction}
+- 每次回复先做一个小动作表达神态，再开口说话
 
 ## 你记得的事
-${shortMem ? '最近发生的事：\n' + shortMem : '今天没什么特别的。'}
-${longMem ? '\n你更久远的记忆：\n' + longMem : ''}
+${shortMem ? '最近发生的事：\n' + shortMem : '最近没什么特别的。'}
+${longMemBlock}
 
 ## 现在的场景
 当前时间：${nowClock}
-你的位置：${npc.location || state.play.location}
+你的位置：${npcLoc}
 ${targetHint}
 
 ## 扮演规则
-- 你就是${npc.name}，活在这个世界里的人，用第一人称「我」口语化说话
-- 你是「${npc.role || '一个普通人'}」，你的职业/身份决定你怎么想事、怎么开口
-- 你的性格底色是「${npc.personality || '和大多数人差不多'}」，说话要带出这个人物的味道
-- 主动开口，说一句自然的话：寒暄、问事、聊近况都行
-- 说话时可以用（神态/动作）描述表情动作，例如：（伸了个懒腰）（望向远处）
-- 字数控制在80字以内，说一句就好，别长篇大论
-- 不要提及你是AI、NPC或语言模型`;
+1. 你就是${npc.name}，活在这个世界的人，用第一人称「我」口语化
+2. 你的性格「${npc.personality || '和大多数人差不多'}」决定你怎么想怎么说
+3. 先回忆再开口：你的记忆里有相关线索时，主动引用
+4. 回复格式：（神态/动作）+ 台词，例如：（伸了个懒腰）看看天，真晴。
+5. 主动开口，说一句自然的话：寒暄、问事、聊近况
+6. 字数控制在80字以内，一句话说完就好
+7. 不要提及你是AI、NPC或语言模型
+9. 注意时间${nowClock}，你的状态随时间变化`;
+
+    const sceneContext = state.play.scene.slice(-10).map(s =>
+      `[${s.time || nowClock}][${s.type}] ${s.content}`
+    ).join('\n');
+
+    const identityLock = `你是「${npc.name}」，不是任何其他人，包括「${targetNpc ? targetNpc.name : playerName}」。` +
+      (targetNpc ? `「${targetNpc.name}」是你的对话对象，不是你自己。` : '');
 
     const reply = await callLLM([
-      { role: 'system', content: '当前时间：' + nowClock + '\n\n以下是刚才发生的对话（带时间戳）：\n' + sceneContext + '\n\n现在没有人点名你，你自然地主动开口。' },
-      { role: 'user', content: '（你开口说话）' }
+      { role: 'system', content: identityLock },
+      { role: 'user', content: '场景最近对话：\n' + sceneContext + '\n\n现在没有人点名你，你自然地主动开口回应场景。' }
     ], systemP);
 
     const escName = npc.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -571,11 +658,14 @@ ${targetHint}
     }
   }
 
+  let _sendBusy = false;
   async function handlePlaySend() {
+    if (_sendBusy) return;
+    _sendBusy = true;
+    try {
     const raw = el.pinput.value.trim();
     if (!raw) return;
     el.pinput.value = '';
-    // 玩家行动完成，世界恢复流动
     state.play.typingPause = false;
 
     const msg = _sanitizeInput(raw, 5000);
@@ -603,10 +693,12 @@ ${targetHint}
     }
 
     for (const npc of repliers) {
-      await _replyNpc(npc, `「${playerName}」对你说：${msg}`, null);
+      try { await _replyNpc(npc, `「${playerName}」对你说：${msg}`, null); }
+      catch(e) { console.warn('[reply]', npc.name, e); addSceneMsg('narrator', '⚠️ ' + npc.name + ' 回复异常：' + (e.message || e)); }
     }
 
     storageSave();
+    } finally { _sendBusy = false; }
   }
 
   // ===== 世界广播：向整个世界推送事件，由导演挑选 NPC 反应 =====
@@ -629,7 +721,8 @@ ${targetHint}
       addSceneMsg('narrator', '🎬 反应者：' + repliers.map(n => n.name).join('、'));
     }
     for (const npc of repliers) {
-      await _replyNpc(npc, '[世界事件] ' + msg + '——你对这件事做出反应。', null);
+      try { await _replyNpc(npc, '[世界事件] ' + msg + '——你对这件事做出反应。', null); }
+      catch(e) { console.warn('[broadcast reply]', npc.name, e); }
     }
     storageSave();
   }
@@ -845,8 +938,8 @@ ${targetHint}
     editingNpcIdx=idx;
     document.querySelector('#modal-npc .modal-header h2').textContent=idx!==null?'编辑 NPC':'新建 NPC';
     document.getElementById('btn-npc-save').textContent=idx!==null?'保存修改':'创建 NPC';
-    if(idx!==null){const n=state.npcs[idx];el.npcName.value=n.name||'';el.npcKind.value=n.kind==='plot'?'plot':'key';el.npcAge.value=n.age||'';el.npcRole.value=n.role||'';el.npcPersonality.value=n.personality||'';el.npcBackstory.value=n.backstory||'';}
-    else{el.npcName.value='';el.npcKind.value='key';el.npcAge.value='';el.npcRole.value='';el.npcPersonality.value='';el.npcBackstory.value='';}
+    if(idx!==null){const n=state.npcs[idx];el.npcName.value=n.name||'';el.npcKind.value=n.kind==='plot'?'plot':'key';el.npcAge.value=n.age||'';el.npcRole.value=n.role||'';el.npcPersonality.value=n.personality||'';el.npcBackstory.value=n.backstory||';el.npcSpeechStyle.value=n.speechStyle||';el.npcVerbalTic.value=n.verbalTic||';el.npcHabitAction.value=n.habitAction||';}
+    else{el.npcName.value='';el.npcKind.value='key';el.npcAge.value='';el.npcRole.value='';el.npcPersonality.value='';el.npcBackstory.value='';el.npcSpeechStyle.value='';el.npcVerbalTic.value='';el.npcHabitAction.value='';}
     el.modalNpc.style.display='flex';setTimeout(()=>el.npcName.focus(),100);
   }
   function closeNpcModal(){el.modalNpc.style.display='none';editingNpcIdx=null;}
@@ -860,6 +953,9 @@ ${targetHint}
       role:_sanitizeInput(el.npcRole.value.trim(),200),
       personality:_sanitizeInput(el.npcPersonality.value.trim(),2000),
       backstory:_sanitizeInput(el.npcBackstory.value.trim(),5000),
+      speechStyle:_sanitizeInput(el.npcSpeechStyle.value.trim(),100),
+      verbalTic:_sanitizeInput(el.npcVerbalTic.value.trim(),100),
+      habitAction:_sanitizeInput(el.npcHabitAction.value.trim(),100),
       icon:['🧙','⚔️','🏹','🔮','🛡️','🧝','⛏️','📜'][state.npcs.length%8]};
     if(editingNpcIdx!==null)Object.assign(state.npcs[editingNpcIdx],npc);else state.npcs.push(npc);
     closeNpcModal();renderRoster();addMessage('sower','🧑‍🌾 NPC「'+npc.name+'」'+(editingNpcIdx!==null?'已更新':'已创建')+'。');storageSave();

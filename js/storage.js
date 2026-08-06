@@ -173,13 +173,175 @@ class VectraStorage {
   async loadNPCMemory(worldId, npcId) {
     if (this.mode === 'server') {
       try {
-        const d = await this._apiGET(`/api/loadNPCMemory/${worldId}/${npcId}`);
-        if (d && d.text !== undefined) return d.text;
+        const d = await this._apiPOST(`/api/npcMemory/${worldId}/${npcId}/index`);
+        // migration returns full entries
+        if (d && d.index) {
+          // sync short-mem text from migrated entries
+          return d.entries ? this._entriesToText(d.entries) : '';
+        }
       } catch (_) {}
     }
+    // localStorage 回退
+    try {
+      const idx = localStorage.getItem(`vectra_memidx_${worldId}_${npcId}`);
+      if (idx) {
+        const parsed = JSON.parse(idx);
+        return parsed.entries ? this._entriesToText(parsed.entries) : '';
+      }
+    } catch (_) {}
     try {
       return localStorage.getItem(`vectra_mem_${worldId}_${npcId}`) || '';
     } catch (_) { return ''; }
+  }
+
+  // --- 结构化记忆 ---
+  // 将短记忆文本还原为纯文本（用于旧接口兼容）
+  _entriesToText(entries) {
+    return (entries || []).map(e => e.content || e.text || '').join('\n').trim();
+  }
+
+  // 提取查询关键词（简单分词）
+  _extractKeywords(text) {
+    if (!text) return [];
+    // 去标点 → 去 CJK 常用标点 → 切词（中/英/数字连续串）→ 过滤短词
+    const cleaned = text
+      .replace(/[。，、：；！？（）【】《》「」『』·——…]/g, ' ')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!cleaned) return [];
+    const tokens = cleaned.split(/[\s]+/).filter(t => t.length >= 2);
+    return [...new Set(tokens)];
+  }
+
+  // 追加结构化记忆条目
+  async appendNPCMemory(worldId, npcId, entries) {
+    if (!entries || entries.length === 0) return { ok: true };
+    const payload = { entries };
+    if (this.mode === 'server') {
+      try {
+        return await this._apiPOST(`/api/npcMemory/${worldId}/${npcId}/append`, payload);
+      } catch (e) {
+        console.warn('[VectraStorage] appendNPCMemory server fail, fallback:', e);
+      }
+    }
+    // localStorage 回退
+    const key = `vectra_memidx_${worldId}_${npcId}`;
+    let stored = { index: { version: 2, updated: 0, total: 0, byTag: {}, byTime: [], byImportance: {} }, entries: [] };
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) stored = JSON.parse(raw);
+    } catch (_) {}
+    stored.entries.push(...entries);
+    if (!stored.index) stored.index = { version: 2, updated: 0, total: 0, byTag: {}, byTime: [], byImportance: {} };
+    stored.index = this._buildIndex(stored.entries);
+    stored.index.updated = Date.now();
+    localStorage.setItem(key, JSON.stringify(stored));
+    return { ok: true, index: stored.index };
+  }
+
+  // 查询相关记忆
+  async queryNPCMemory(worldId, npcId, { tags = [], keywords = [], maxChars = 1500, recent = 5, minImportance = 7 }) {
+    // 从查询关键词构造标签（地点/人名/关键词）
+    const allTags = [...new Set([...tags, ...(keywords || [])])];
+    if (this.mode === 'server') {
+      try {
+        const d = await this._apiPOST(`/api/npcMemory/${worldId}/${npcId}/query`, {
+          tags: allTags, keywords, maxChars, recent, minImportance
+        });
+        if (d && d.matched) return d.matched;
+      } catch (e) {
+        console.warn('[VectraStorage] queryNPCMemory server fail, fallback:', e);
+      }
+    }
+    // localStorage 回退
+    try {
+      const key = `vectra_memidx_${worldId}_${npcId}`;
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const stored = JSON.parse(raw);
+        return this._queryEntries(stored.entries || [], { tags: allTags, maxChars, recent, minImportance });
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  // localStorage 回退：构建索引
+  _buildIndex(entries) {
+    const byTag = {}, byImportance = {}, byTime = [];
+    for (const e of entries) {
+      const id = e.id || '';
+      byTime.push(id);
+      (e.tags || []).forEach(t => {
+        const tag = String(t).trim();
+        if (tag) (byTag[tag] = byTag[tag] || []).push(id);
+      });
+      const lvl = e.importance || 0;
+      (byImportance[String(lvl)] = byImportance[String(lvl)] || []).push(id);
+    }
+    return {
+      version: 2, updated: Date.now(), total: entries.length,
+      byTag, byTime: byTime.reverse(), byImportance
+    };
+  }
+
+  // localStorage 回退：检索
+  _queryEntries(entries, { tags = [], maxChars = 1500, recent = 5, minImportance = 7 }) {
+    const byTag = {}, byImportance = {}, byTime = [];
+    const entryMap = {};
+    entries.forEach(e => {
+      const id = e.id || '';
+      entryMap[id] = e;
+      byTime.push(id);
+      (e.tags || []).forEach(t => {
+        const tag = String(t).trim();
+        if (tag) (byTag[tag] = byTag[tag] || []).push(id);
+      });
+      const lvl = e.importance || 0;
+      (byImportance[String(lvl)] = byImportance[String(lvl)] || []).push(id);
+    });
+    byTime.reverse();
+    const wantTags = new Set(tags);
+    const scored = {};
+    byTime.slice(0, recent).forEach((eid, i) => { scored[eid] = (scored[eid] || 0) + 1.0 - i * 0.1; });
+    wantTags.forEach(t => { (byTag[t] || []).forEach(eid => { scored[eid] = (scored[eid] || 0) + 1.5; }); });
+    Object.entries(byImportance).forEach(([lvl, ids]) => {
+      const n = parseInt(lvl);
+      if (n >= Math.max(7, minImportance)) ids.forEach(eid => { scored[eid] = (scored[eid] || 0) + 1.2; });
+    });
+    const ordered = Object.keys(scored).sort((a, b) => scored[b] - scored[a]);
+    const matched = [], entryMap2 = {};
+    entries.forEach(e => { entryMap2[e.id || ''] = e; });
+    let total = 0;
+    for (const eid of ordered) {
+      const e = entryMap2[eid];
+      const text = e.content || e.text || '';
+      if (total + text.length > maxChars) break;
+      matched.push(e);
+      total += text.length;
+    }
+    return matched;
+  }
+
+  // --- 短记忆 → 长记忆巩固 ---
+  // 把 NPC 的短记忆摘录为结构化长记忆条目（调用前台 LLM）
+  async consolidateShortMemory(worldId, npcId, shortMem, { callLLM, playerName, npcName } = {}) {
+    if (!shortMem || shortMem.length < 50 || !callLLM) return [];
+    const systemExtra = `你是一个记忆整理专家。阅读下列 NPC 的短期记忆，对话记录，提炼为 3～5 条独立、可被后续对话引用的长期记忆条目。
+为每条条目打上 2～4 个标签（涉及的人名、地点、物品、情节点、承诺、秘密、任务），评分重要度 1～10。
+输出JSON数组：[{"id":"m_<时间戳>_<i>","ts":<毫秒时间戳>,"time":"游戏内时间","type":"dialogue|event|observation|reflection","tags":["..."],"content":"...","importance":N}]
+仅输出JSON，不要解释。`;
+    const summary = await callLLM([
+      { role: 'user', content: shortMem }
+    ], systemExtra);
+    try {
+      const entries = JSON.parse((summary || '').match(/\[[\s\S]*\]/)?.[0] || '[]');
+      if (entries && entries.length) await this.appendNPCMemory(worldId, npcId, entries);
+      return entries;
+    } catch (e) {
+      console.warn('[VectraStorage] consolidateShortMemory parse fail:', e);
+      return [];
+    }
   }
 
   // ===== API 设置（含 Key 混淆） =====
