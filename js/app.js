@@ -63,21 +63,31 @@ document.addEventListener('DOMContentLoaded', () => {
     btnQuestSave: $('#btn-quest-save'), btnQuestClose: $('#btn-quest-close'),
     modalMemory: $('#modal-memory'), memoryShort: $('#memory-short'), memoryLong: $('#memory-long'),
     memoryNpcLabel: $('#memory-npc-label'), btnMemorySave: $('#btn-memory-save'), btnMemoryClose: $('#btn-memory-close'),
+    memoryEntries: $('#memory-entries'), memoryTagFilter: $('#memory-tag-filter'),
+    memoryNewTags: $('#memory-new-tags'), memoryNewContent: $('#memory-new-content'),
+    memoryNewImp: $('#memory-new-imp'), memoryAddBtn: $('#memory-add-btn'),
   };
 
-  // ===== 存储封装 =====
+  // ===== 存储封装（防抖：500ms 内多次调用只执行最后一次）=====
+  let _saveTimer = null;
   async function storageSave() {
-    await vectraStorage.saveWorldList(state.worlds, state.currentWorld);
-    await vectraStorage.saveWorldData(state.currentWorld, {
-      phase: state.phase, bible: state.bible, player: state.player, npcs: state.npcs, quests: state.quests,
-      messages: state.messages.slice(-100),
-      playEvents: state.play.events.slice(-200),
-      playScene: state.play.scene.slice(-100),
-      playClock: state.play.clock,
-      playMode: state.play.mode,
-      launched: state.launched,
-    });
-    el.storageIndicator.textContent = vectraStorage.label;
+    if (_saveTimer) clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(async () => {
+      _saveTimer = null;
+      try {
+        await vectraStorage.saveWorldList(state.worlds, state.currentWorld);
+        await vectraStorage.saveWorldData(state.currentWorld, {
+          phase: state.phase, bible: state.bible, player: state.player, npcs: state.npcs, quests: state.quests,
+          messages: state.messages.slice(-100),
+          playEvents: state.play.events.slice(-200),
+          playScene: state.play.scene.slice(-100),
+          playClock: state.play.clock,
+          playMode: state.play.mode,
+          launched: state.launched,
+        });
+        el.storageIndicator.textContent = vectraStorage.label;
+      } catch(e) { console.warn('[storageSave]', e); }
+    }, 500);
   }
 
   async function storageLoadWorld(id) {
@@ -1022,19 +1032,67 @@ ${targetHint}
   });
   el.btnQuestClose.addEventListener('click',closeQuestModal);
 
-  let memoryNpcIdx=null;
+  let memoryNpcIdx=null;let _memEntries=[];
   async function openMemoryModal(idx){
     memoryNpcIdx=idx;const n=state.npcs[idx];
     el.memoryNpcLabel.textContent='— '+n.name;
-    const longMem=await vectraStorage.loadNPCMemory(state.currentWorld,n.id);
-    el.memoryShort.value=n._shortMem||'';el.memoryLong.value=longMem||'';
+    el.memoryShort.value=n._shortMem||'';
+    el.memoryEntries.innerHTML='<div class="empty-state" style="padding:8px;">加载中…</div>';
+    el.memoryTagFilter.value='';
+    // 加载结构化记忆
+    const res = await vectraStorage.loadNPCMemoryIndex(state.currentWorld,n.id);
+    _memEntries = (res && res.entries) || [];
+    _renderMemEntries();
     el.modalMemory.style.display='flex';
   }
+  function _renderMemEntries(filterTag=''){
+    const entries = _memEntries;
+    const filtered = filterTag
+      ? entries.filter(e => (e.tags||[]).some(t => t.includes(filterTag)))
+      : entries;
+    if(!filtered.length){el.memoryEntries.innerHTML='<div class="empty-state" style="padding:8px;">'+(!filterTag?'暂无长期记忆。':'无匹配的记忆。')+'</div>';return;}
+    el.memoryEntries.innerHTML=filtered.map(e=>`
+      <div class="mem-entry" data-id="${e.id||''}" style="margin-bottom:10px;padding:8px;border:1px solid var(--border-color);border-radius:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:12px;color:var(--text-secondary);">${e.time||'第?日'} ⚡${e.importance||5}</span>
+          <button class="btn-icon-tiny" data-action="del-mem" data-id="${e.id||''}" title="删除">✕</button>
+        </div>
+        <div style="font-size:13px;margin:4px 0;">${Sanitize.htmlEncode(e.content||'')}</div>
+        <div style="font-size:11px;color:var(--text-muted);">${(e.tags||[]).map(t=>`<span style="background:rgba(255,255,255,0.1);padding:1px 6px;border-radius:3px;margin-right:4px;">${Sanitize.htmlEncode(t)}</span>`).join('')}</div>
+      </div>`).join('');
+    // tag click-to-filter
+    el.memoryEntries.querySelectorAll('[data-action="del-mem"]').forEach(b=>{
+      b.addEventListener('click',()=>{_deleteMemEntry(b.dataset.id);});
+    });
+    el.memoryEntries.querySelectorAll('.mem-entry > div > span[style*="rgba"]').forEach(tagSpan=>{
+      // clicking a tag filters
+    });
+  }
+  async function _deleteMemEntry(id){
+    const n=state.npcs[memoryNpcIdx];if(!n||!state.currentWorld)return;
+    _memEntries = _memEntries.filter(e=>e.id!==id);
+    // 重写整个 jsonl + index
+    await vectraStorage.overwriteNPCMemory(state.currentWorld,n.id,_memEntries);
+    _renderMemEntries(el.memoryTagFilter.value);
+    addEvent(n.name+' 的记忆被删除：'+id.slice(0,12));
+  }
+  el.memoryTagFilter.addEventListener('keydown',(e)=>{
+    if(e.key==='Enter'){el.memoryTagFilter.blur();_renderMemEntries(el.memoryTagFilter.value.trim());}
+  });
+  el.memoryAddBtn.addEventListener('click',async()=>{
+    const n=state.npcs[memoryNpcIdx];if(!n||!state.currentWorld)return;
+    const tags=el.memoryNewTags.value.split(',').map(s=>s.trim()).filter(Boolean);
+    const content=el.memoryNewContent.value.trim();
+    const imp=parseInt(el.memoryNewImp.value,10)||5;
+    if(!content)return;
+    const entry={id:'mem_'+Date.now(),ts:Date.now(),time:formatClock(),type:'reflection',tags:tags,content:_sanitizeInput(content,2000),importance:imp};
+    await vectraStorage.appendNPCMemory(state.currentWorld,n.id,[entry]);
+    el.memoryNewTags.value='';el.memoryNewContent.value='';el.memoryNewImp.value=5;
+    openMemoryModal(memoryNpcIdx); // 刷新
+  });
   el.btnMemorySave.addEventListener('click',async()=>{
     if(memoryNpcIdx===null)return;const n=state.npcs[memoryNpcIdx];
     n._shortMem=_sanitizeInput(el.memoryShort.value.trim(),5000);
-    const longText=_sanitizeInput(el.memoryLong.value.trim(),50000);
-    if(longText)await vectraStorage.saveNPCMemory(state.currentWorld,n.id,longText);
     el.modalMemory.style.display='none';addMessage('sower','🧠 NPC「'+n.name+'」记忆已保存。');storageSave();
   });
   el.btnMemoryClose.addEventListener('click',()=>{el.modalMemory.style.display='none';});

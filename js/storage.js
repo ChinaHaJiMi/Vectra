@@ -189,9 +189,53 @@ class VectraStorage {
         return parsed.entries ? this._entriesToText(parsed.entries) : '';
       }
     } catch (_) {}
-    try {
+     try {
       return localStorage.getItem(`vectra_mem_${worldId}_${npcId}`) || '';
     } catch (_) { return ''; }
+  }
+
+  // --- 结构化记忆存取 ---
+  // 加载记忆索引 + 条目
+  async loadNPCMemoryIndex(worldId, npcId) {
+    if (this.mode === 'server') {
+      try {
+        const d = await this._apiGET(`/api/npcMemory/${worldId}/${npcId}/index`);
+        if (d) {
+          // ensure entries exist
+          if (!d.entries) {
+            const ent = await this._apiGET(`/api/npcMemory/${worldId}/${npcId}/index`);
+            return ent || { index: d.index, entries: [] };
+          }
+          return { index: d.index, entries: d.entries || [] };
+        }
+      } catch (_) {}
+    }
+    // localStorage 回退
+    try {
+      const raw = localStorage.getItem(`vectra_memidx_${worldId}_${npcId}`);
+      if (raw) {
+        const stored = JSON.parse(raw);
+        return { index: stored.index, entries: stored.entries || [] };
+      }
+    } catch (_) {}
+    return { index: null, entries: [] };
+  }
+
+  // 覆盖写入所有记忆条目（用于删除/编辑）
+  async overwriteNPCMemory(worldId, npcId, entries) {
+    const payload = { entries: entries || [] };
+    if (this.mode === 'server') {
+      try {
+        // 复用 append 接口（服务器端会重写 jsonl + index）
+        await this._apiPOST(`/api/npcMemory/${worldId}/${npcId}/overwrite`, payload);
+      } catch (_) {}
+    }
+    // localStorage 回退
+    try {
+      const stored = { index: this._buildIndex(entries), entries: entries || [] };
+      stored.index.updated = Date.now();
+      localStorage.setItem(`vectra_memidx_${worldId}_${npcId}`, JSON.stringify(stored));
+    } catch (_) {}
   }
 
   // --- 结构化记忆 ---

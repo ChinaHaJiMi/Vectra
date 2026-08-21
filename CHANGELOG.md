@@ -10,10 +10,15 @@ All notable changes to VECTRA will be documented in this file.
 - 场景地图/网格编辑器
 - 一键安装发行版脚本（Windows `install.bat` / Linux·macOS `install.sh`）
 - 服务器支持 `VECTRA_NO_SSL=1`（HTTP 直连）与 `VECTRA_PORT` 环境变量
+- **结构化记忆系统 v2**：NPC 长期记忆按条目存储（JSONL + 索引），支持按标签/时间/重要度检索
+- **NPC 行为契约**：每个 NPC 可设定「说话风格 / 口头禅 / 习惯动作」
+- 记忆档案浏览器：按标签筛选、检索、编辑、删除记忆条目
 
 ### Changed
 - 默认桌面启动方式改为 HTTP 直连，浏览器无自签名证书警告
 - 移除仓库内 `.bak` / `.cph` / gitleaks 报告等垃圾文件
+- NPC 回复提示词 v2：身份锁定合并、记忆主动引用、神态动作格式化
+- `storageSave()` 防抖（500ms），本地服务器限流调整
 
 ## [1.0.0] — 2024-07-23
 

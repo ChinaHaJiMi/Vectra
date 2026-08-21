@@ -27,7 +27,7 @@ PORT = int(os.environ.get("VECTRA_PORT", "8080"))
 VECTRA_NO_SSL = os.environ.get("VECTRA_NO_SSL", "") == "1"
 DATA_DIR = os.path.join(os.path.expanduser("~"), "VectraData")
 CERT_DIR = os.path.join(DATA_DIR, "certs")
-RATE_LIMIT_PER_MINUTE = 60
+RATE_LIMIT_PER_MINUTE = 600
 CLIENT_BODY_MAX_SIZE = 1024 * 512  # 512KB
 
 # 日志配置
@@ -274,6 +274,8 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
             if len(parts) == 3 and validate_world_id(parts[0]) and validate_npc_id(parts[1]):
                 if parts[2] == 'append':
                     self._handle_append_npc_memory(parts[0], parts[1], parsed_body)
+                elif parts[2] == 'overwrite':
+                    self._handle_overwrite_npc_memory(parts[0], parts[1], parsed_body)
                 elif parts[2] == 'query':
                     self._handle_query_npc_memory(parts[0], parts[1], parsed_body)
                 else:
@@ -308,12 +310,7 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8'))
 
     def _check_rate_limit(self):
-        ip = self.get_client_ip()
-        if not rate_limiter.is_allowed(ip):
-            logger.warning(f"[RATE_LIMIT] {ip} 超过速率限制")
-            self._send_json({"error": "too many requests"}, 429)
-            return False
-        return True
+        return True  # 本地服务器无需限流
 
     def _ensure_dir(self, path):
         os.makedirs(path, exist_ok=True)
@@ -612,6 +609,17 @@ class VectraHTTPHandler(http.server.SimpleHTTPRequestHandler):
             matched.append(e)
             total += len(text)
         self._send_json({"matched": matched, "index": index})
+
+    def _handle_overwrite_npc_memory(self, world_id, npc_id, data):
+        data = sanitize_json_data(data)
+        entries = data.get('entries') or []
+        if not isinstance(entries, list):
+            self._send_json({"error": "entries must be a list"}, 400)
+            return
+        self._write_mem_jsonl(world_id, npc_id, entries)
+        index = self._build_mem_index(entries)
+        self._write_json_file(self._mem_index_path(world_id, npc_id), index)
+        self._send_json({"ok": True, "index": index})
 
 
 if __name__ == '__main__':

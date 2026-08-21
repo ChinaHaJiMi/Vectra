@@ -239,21 +239,29 @@
   </div>
 
   <div id="modal-memory" class="modal-overlay" style="display:none;">
-    <div class="modal-box">
+    <div class="modal-box mem-archive">
       <div class="modal-header"><h2>🧠 记忆档案</h2><span id="memory-npc-label" style="font-size:12px;color:var(--text-muted);"></span><button class="modal-close" id="btn-memory-close">&times;</button></div>
       <div class="modal-body">
-        <label class="field-label">📋 短期记忆（AI 上下文）</label><textarea id="memory-short" class="field-textarea" rows="4" placeholder="播种者会知道的近期事件…"></textarea>
-        <label class="field-label">📚 长期记忆（完整档案）</label><textarea id="memory-long" class="field-textarea" rows="8" placeholder="将持久化保存到文件。"></textarea>
+        <input type="text" id="memory-tag-filter" class="field-input" placeholder="筛选标签（回车搜索）" style="margin-bottom:8px;">
+        <div id="memory-entries" style="max-height:320px;overflow-y:auto;">
+          <div class="empty-state" style="padding:8px;">加载中…</div>
+        </div>
+        <hr style="margin:12px 0;border:none;border-top:1px solid var(--border-color);">
+        <label class="field-label">➕ 添加记忆条目</label>
+        <input type="text" id="memory-new-tags" class="field-input" placeholder="标签（逗号分隔）" style="margin-bottom:6px;">
+        <textarea id="memory-new-content" class="field-textarea" rows="3" placeholder="记忆内容…"></textarea>
+        <input type="number" id="memory-new-imp" class="field-input" placeholder="重要度 1～10" min="1" max="10" value="5" style="width:80px;">
+        <button id="memory-add-btn" class="btn-secondary-tiny" style="margin-top:8px;">添加到长期记忆</button>
       </div>
-      <div class="modal-footer"><button id="btn-memory-save" class="btn-primary">保存记忆</button></div>
+      <div class="modal-footer"><button id="btn-memory-save" class="btn-secondary">保存短期记忆</button></div>
     </div>
   </div>
 
   <script src="js/utils/sanitize.js?v=6"></script>
-  <script src="js/storage.js?v=9"></script>
+  <script src="js/storage.js?v=10"></script>
   <script src="js/trex/runner.js?v=1"></script>
   <script src="js/trex.js?v=1"></script>
   <script src="js/fireworks.js?v=1"></script>
-  <script src="js/app.js?v=19"></script>
+  <script src="js/app.js?v=20"></script>
 </body>
 </html>
