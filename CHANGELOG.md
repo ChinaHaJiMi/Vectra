@@ -2,7 +2,34 @@
 
 All notable changes to VECTRA will be documented in this file.
 
-## [Unreleased]
+## [2.0.0] — 2025-09-05 大转向：对话网页 → 无头 AI 叙事引擎
+
+### Breaking / Removed
+- **移除全部旧 WebUI**（`index.html`、`css/`、`js/` 含小恐龙彩蛋与烟花、
+  `install/`、`release/`）—— VECTRA 不再自带前端，只做叙事后端。
+- 移除旧的浏览器 localStorage 模式与 CSRF 流程（现在是无头 REST 服务）。
+
+### Added
+- **无头 AI 叙事引擎**：零依赖 Python 服务，供 Unity/Godot/Cocos 等 2D 游戏
+  引擎以 HTTP/SSE 驱动，覆盖三大叙事能力：
+  - **叙事摘要**：`POST /summarize` 滚动压缩 · `GET /summary`
+  - **信息整合**：`POST /integrate` 把事件凝练为结构化事实 + 角色记忆 + 关系边
+  - **NPC 关系图**：`GET /graph`（节点=实体，边带 好感/信任/熟悉度，随事件演化）
+- 事件台账（events.jsonl）、事实库（facts.jsonl）、每实体记忆流（memories/*.jsonl
+  + 索引）、图（graph.json）、摘要（summary.json），按 `cursors.ingested/
+  integrated/summarized` 游标增量推进。
+- **离线确定性兜底**：未配 LLM Key 时整合/摘要/生成走启发式，输出结构与在线一致，
+  便于无 Key 测试与单元测试。
+- LLM 编排（`vectra/brain.py`）：OpenAI 兼容 API，逐世界可配 endpoint/key/model，
+  `POST /narrate` 支持 SSE 流式生成。
+- **NPC 行为决策 `decide`**：从"只对话"迈向"全 AI 驱动行为" —— `POST /decide`
+  让 NPC 依据 角色卡+记忆+关系+场景 产出结构化意图；动作只能从技能清单
+  `SKILL_MANIFEST`（move/social/item/combat 共 9 种）选择，可用 `groups` 过滤，
+  非法动作强制纠正；离线有确定性决策兜底，技能由游戏侧实现即可驱动真实行为。
+- 完整 REST 契约 `openapi.yaml` + 参考调用链 `samples/demo_client.py`。
+- 写操作可选 `X-Vectra-Token` 共享令牌门禁；目录穿越净化沿用。
+
+## [1.x] — 旧版本（AI NPC 模拟网页）
 
 ### Added
 - NPC 关系图谱可视化

@@ -1,174 +1,124 @@
-# VECTRA — AI NPC 模拟系统
+# VECTRA 2 — Headless AI Narrative Engine
 
-> **VECTRA** 是一个零依赖的 AI 驱动的 NPC（非玩家角色）模拟系统。  
-> 你创建世界、设定居民，然后走进这个世界，与 AI 居民实时对话。
+> VECTRA 以前是一个"AI NPC 对话网页"。**v2 完成大转向**：它现在是一个**无头的
+> 叙事引擎（服务）**，专门做 AI 驱动 2D 游戏的"叙事大脑"。游戏本体（Unity /
+> Godot / Cocos，任何能发 HTTP 的引擎）负责渲染、物理、输入；**叙事摘要、信息
+> 整合、NPC 关系图、角色记忆、剧情对白生成这些"脑力活"，全部由 VECTRA 包办。**
+
+```
+               你的 2D 游戏（Unity 等）                 VECTRA 叙事引擎（本仓库）
+   ┌──────────────────────────────────┐        ┌─────────────────────────────┐
+   │ 渲染 / 物理 / 输入 / 关卡          │        │  世界清单 · 实体名册          │
+   │                                  │  POST  │  事件台账 (events.jsonl)     │
+   │  "角色X对角色Y做了某件事" ─────────┼───────▶│        │ 整合(信息整合)          │
+   │                                  │        │        ▼                    │
+   │  UI 拉去 <── GET /summary ────────┼────────│  事实库 · 角色记忆 · 关系图    │
+   │  关系面板 <── GET /graph ─────────┼────────│  滚动叙事摘要 (叙事摘要)       │
+   │  剧情文字 <── POST /narrate ──────┼────────│  对白/旁白生成 (SSE 流式)      │
+   └──────────────────────────────────┘        └─────────────────────────────┘
+```
 
 ---
 
-## 功能概览
+## 核心能力（正是你要的那三块）
 
-| 模块 | 说明 |
-|------|------|
-| **创世模式**（播种者） | 通过自然语言对话，AI 「播种者」帮你生成世界设定、NPC 居民和故事线 |
-| **游玩模式** | 走进你的世界，与 AI NPC 实时对话，时间持续流动 |
-| **NPC 双记忆系统** | 短期记忆（上下文窗口） + 长期记忆（文件持久化） |
-| **时钟系统** | 游戏内时间持续流动，支持 0.5×/1×/2×/5× 倍速 |
-| **世界事件日志** | 自动记录每一次互动和世界变化 |
-| **双存储后端** | `server.py` 文件存储 / `localStorage` 自动回退 |
-| **NPC 行为契约** | 每个 NPC 可设定说话风格、口头禅、习惯动作 |
-| **导演 AI** | 可选的 AI 导演，控制 NPC 回复顺序，避免抢话 |
-| **结构化记忆** | NPC 长期记忆按条目存储，支持按标签/时间/重要度检索 |
-| **记忆档案浏览器** | 按标签筛选、检索、编辑记忆条目 |
+| 能力 | 说明 | 端点 |
+|------|------|------|
+| **叙事摘要** | 把已发生的事件滚动压缩成一段连贯故事，长流程不爆上下文 | `POST /summarize` · `GET /summary` |
+| **信息整合** | 把游戏上报的零散事件，凝练成结构化**事实**，写进**角色记忆**并同步到关系网 | `POST /integrate` · `GET /facts` |
+| **NPC 关系图** | 节点=实体(角色/玩家/阵营…)，边带 `好感/信任/熟悉度`，随事件自动演化 | `GET /graph` · `GET /graph/{实体}` |
+| 角色记忆 | 每个实体一条记忆流（JSONL+索引），按 标签/重要度/时效 加权召回 | `GET|POST .../memories` · `/query` |
+| 剧情生成 | 按当前世界状态+摘要+记忆生成旁白/对白，支持 SSE 流式 | `POST /narrate` |
+| **NPC 行为决策** | 让 NPC 不止"说话"还会"行动"：返回结构化意图（goal/need/action/speech），动作**只能**从技能清单选 | `POST /decide` · `GET /skills` |
+
+> **为什么这样才是"全 AI 驱动行为"**：AI 不亲手推物理，而是**选动作**。
+> `/decide` 读入角色卡+记忆+关系+场景，产出一个意图，其 `action.skill` 恒来自
+> 技能清单 `SKILL_MANIFEST`（移动/社交/物品/战斗 9 种）。你的游戏只需在 Unity
+> 侧实现这 9 个"技能=真实函数"，执行完把结果发回 `/events` → `integrate`，
+> 记忆/关系随之更新，形成 **感知→决策→执行→观察** 的完整闭环。技能盘外、或
+> 超出 `groups` 限制的动作一律被拦，杜绝 LLM 凭空捏造不可执行的动作。
+
+### 离线兜底（重要）
+没有配 LLM Key 也能跑：整合/摘要/生成会走**确定性启发式**，结构与在线一致，
+方便你离线测试、写单元测试、或在不想付 token 时跑轻量逻辑。配上任意
+OpenAI 格式 LLM（DeepSeek/OpenAI/Ollama…）即升级为实时推理。
 
 ---
 
 ## 快速开始
 
-### 方式一：纯前端（零安装）
-
-直接打开 `index.html` 即可运行。  
-数据存储在浏览器 `localStorage` 中，刷新页面数据不丢失。
-
-**优点**：无需安装任何依赖，适合快速体验  
-**缺点**：数据仅保存在当前浏览器，清除缓存会丢失
-
-### 方式二：启动后端服务器（推荐）
-
-后端服务器提供文件系统持久化存储，支持多世界管理。
-
 ```bash
-# 启动（默认端口 8080）
-python3 server.py
+# 1. 启动引擎（零依赖，只需 Python 3.8+）
+python3 server.py                 # → http://127.0.0.1:8237/v1
 
-# 访问
-open http://localhost:8080
+# 2. 跑参考 demo（演示 Unity 侧完整调用链）
+python3 samples/demo_client.py
+
+# 3. 配置 LLM（可选，三种方式任一）
+export VECTRA_LLM_ENDPOINT=https://api.deepseek.com/v1
+export VECTRA_LLM_KEY=sk-xxx
+export VECTRA_LLM_MODEL=deepseek-chat
 ```
 
-数据存储位置：`~/VectraData/`
+### 一个最小调用序列（任意 HTTP 客户端）
 
-**优点**：数据持久化保存，支持多浏览器访问  
-**缺点**：需要 Python 3.7+ 环境
+```bash
+B=http://127.0.0.1:8237/v1
+# 注册世界
+curl -X POST $B/worlds -H 'Content-Type: application/json' \
+     -d '{"id":"vale","name":"风谷镇"}'
+# 上报名册
+curl -X PUT $B/worlds/vale/entities -H 'Content-Type: application/json' \
+     -d '{"entities":[{"id":"kid","name":"孤儿"},{"id":"p","name":"旅人","kind":"player"}]}'
+# 游戏事件：谁 对谁 做了什么 / 说了什么
+curl -X POST $B/worlds/vale/events -H 'Content-Type: application/json' \
+     -d '{"events":[{"time":"D1","actor":"kid","verb":"告诉","target":"p","text":"孤儿透露镇长夜里去旧矿洞。"}]}'
+# 整合 → 摘要
+curl -X POST $B/worlds/vale/integrate
+curl -X POST $B/worlds/vale/summarize
+# 拉取叙事 / 关系 / 生成
+curl $B/worlds/vale/summary
+curl $B/worlds/vale/graph
+curl -X POST $B/worlds/vale/narrate -H 'Content-Type: application/json' -d '{"who":"kid"}'
+# 让 NPC 自主决定下一步动作（可选 groups 限定技能类别）
+curl -X POST $B/worlds/vale/decide -H 'Content-Type: application/json' \
+     -d '{"who":"kid","groups":["move","social","item","combat"]}'
+curl $B/worlds/vale/skills          # 查看技能清单
+```
 
-#### 环境变量配置
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `VECTRA_PORT` | `8080` | 服务器端口 |
-| `VECTRA_NO_SSL` | 空 | 设为 `1` 禁用 HTTPS（HTTP 直连） |
-
-#### 后端 API 路由
-
-| 路由 | 方法 | 说明 |
-|------|------|------|
-| `/api/status` | GET | 服务器状态 |
-| `/api/csrf-token` | GET | 获取 CSRF 令牌 |
-| `/api/loadWorldList` | GET | 加载世界列表 |
-| `/api/saveWorldList` | POST | 保存世界列表 |
-| `/api/loadWorldData/{id}` | GET | 加载世界数据 |
-| `/api/saveWorldData/{id}` | POST | 保存世界数据 |
-| `/api/deleteWorld/{id}` | POST | 删除世界 |
-| `/api/loadNPCMemory/{worldId}/{npcId}` | GET | 加载 NPC 长期记忆 |
-| `/api/saveNPCMemory/{worldId}/{npcId}` | POST | 保存 NPC 长期记忆 |
-| `/api/npcMemory/{worldId}/{npcId}/index` | GET | 获取记忆索引 |
-| `/api/npcMemory/{worldId}/{npcId}/append` | POST | 追加记忆条目 |
-| `/api/npcMemory/{worldId}/{npcId}/query` | POST | 查询记忆条目 |
-| `/api/npcMemory/{worldId}/{npcId}/overwrite` | POST | 覆盖记忆条目 |
-
-#### 安全特性
-
-- **CSRF 保护**：所有写操作需要有效的 CSRF 令牌
-- **输入净化**：所有用户输入经过过滤和长度限制
-- **路径验证**：防止目录遍历攻击
-- **限流**：600 请求/分钟/IP（本地开发无需限流）
+`openapi.yaml` 是完整契约，可直接导入 Postman / 生成 Unity C# 客户端。
 
 ---
 
-## 使用流程
+## 事件格式（信息整合的输入）
 
-### 1. 新建世界
+游戏只需把"发生了什么"如实上报，叙事字段缺省留空即可：
 
-点击左侧栏「＋ 新建世界」，输入名称。世界名称会自动转换为 ID（如「中土世界」→ `中土世界`）。
-
-### 2. 创世四阶段
-
-| 阶段 | 描述 | 播种者支持 |
-|------|------|------------|
-| **① 世界设定书** | 设定世界观、法则、纪元。可手动编写，或与播种者对话生成 | ✅ 可对话生成 |
-| **② 居民名册** | 创建 NPC 居民，播种者也可批量生成 | ✅ 可批量生成 |
-| **③ 往事蓝图** | 设定故事线、事件节点（支持 6 种类型） | ✅ 可对话生成 |
-| **④ 启动世界** | 点击「▶ 开始 PLAY」进入游玩模式 | — |
-
-**创世提示**：
-- 每个阶段可手动编辑，也可通过播种者对话生成
-- 播种者会返回结构化 JSON，自动填充对应表单
-- 每阶段完成后点击「✓ 确认定稿」推进到下一阶段
-
-### 3. 游玩模式
-
-| 区域 | 功能 |
-|------|------|
-| **居民列表**（左栏） | 点击 NPC 开始对话，显示 NPC 名称和状态 |
-| **场景**（中栏） | 实时对话展示，显示 NPC 名称和对话内容 |
-| **事件日志**（右栏） | 世界事件记录，点击可加载到场景 |
-| **时钟**（顶栏） | 游戏内时间推进，支持倍速和暂停 |
-| **广播**（右上角） | 向整个世界广播事件，影响所有 NPC |
-
-**游玩模式功能**：
-- **自动对话**：NPC 会主动交流（可关闭）
-- **倍速控制**：0.5× / 1× / 2× / 5×
-- **时间暂停**：点击暂停按钮停止时间流动
-- **返回创世**：点击「← 创世」返回创世模式（仅查看，不可编辑已启动的世界）
-
-### 4. 保存与恢复
-
-已启动的世界会自动标记为 `launched`，下次打开浏览器或切换世界时自动进入游玩模式，历史对话和事件完整恢复。
-
-**保存机制**：
-- 自动保存：每次操作后 500ms 防抖自动保存
-- 手动保存：点击保存按钮（如果有）
-- 存储位置：localStorage（前端）或 `~/VectraData/`（后端）
+```json
+{
+  "time": "D1 黄昏", "location": "港口",
+  "actor": "cap",                 // 行为者(实体 id)
+  "verb": "警告",                  // 规范化动词(驱动好感/信任启发)
+  "target": "you",                // 对象(实体 id)
+  "speaker": "cap",               // 若是对白行，谁开口
+  "text": "雾里有东西，今晚别出航。",
+  "payload": { "note": "...", "tone": "warm|neutral|hostile" }
+}
+```
 
 ---
 
 ## 配置
 
-### API 设置
+| 环境变量 | 默认 | 说明 |
+|----------|------|------|
+| `VECTRA_PORT` | `8237` | 端口 |
+| `VECTRA_HOST` | `127.0.0.1` | 监听地址（游戏在别的机器可设 `0.0.0.0`） |
+| `VECTRA_DATA` | `~/VectraData` | 数据目录（JSON 持久化） |
+| `VECTRA_API_TOKEN` | 空 | 若设了，所有写操作需 `X-Vectra-Token` 头 |
+| `VECTRA_LLM_ENDPOINT/_KEY/_MODEL` | — | 默认 LLM（OpenAI 格式） |
 
-点击侧边栏 ⚙ 按钮，配置：
-
-| 参数 | 说明 | 推荐值 |
-|------|------|--------|
-| **API 端点** | OpenAI 格式 API 端点（支持 OpenAI / DeepSeek / 任何兼容端点） | 见下方表格 |
-| **API Key** | 你的 API 密钥 | — |
-| **模型 ID** | 模型名称，如 `gpt-4o`、`deepseek-chat` 等 | 见下方表格 |
-| **Temperature** | 创造力系数 (0~2) | 0.8 |
-| **Max Tokens** | 最大生成长度 | 4096 |
-| **自动交流频率** | NPC 主动交流次数/分钟（0=关闭） | 5 |
-
-#### 支持的 API 提供商
-
-| 提供商 | 端点 | 模型示例 | 备注 |
-|--------|------|----------|------|
-| OpenAI | `https://api.openai.com/v1` | `gpt-4o`, `gpt-4o-mini` | 官方 API |
-| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat`, `deepseek-coder` | 性价比高 |
-| 本地 Ollama | `http://localhost:11434/v1` | `llama3`, `mistral` | 无需联网 |
-| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-turbo`, `qwen-plus` | 国内访问快 |
-| 智谱 AI | `https://open.bigmodel.cn/api/paas/v4` | `glm-4`, `glm-4-flash` | 国内访问快 |
-
-#### 导演 AI（可选）
-
-导演 AI 用于控制每次对话由哪个 NPC 回应，避免无关 NPC 插话、认错人。
-
-| 参数 | 说明 |
-|------|------|
-| **导演 AI 端点** | 留空则复用上方主 API 端点 |
-| **导演 AI Key** | 留空则复用上方主 API Key |
-| **导演 AI 模型** | 留空则复用上方主模型 |
-
-**导演工作原理**：
-1. 玩家输入对话后，导演 AI 分析当前场景和 NPC 状态
-2. 决定哪个 NPC 应该回应（可能多个 NPC 同时回应）
-3. 将对话分配给对应的 NPC 处理
+每个世界也可单独配 `PATCH /worlds/{id}` 里的 `llm`（endpoint/key/model/temperature）。
 
 ---
 
@@ -176,221 +126,51 @@ open http://localhost:8080
 
 ```
 Vectra/
-├── index.html              # 主页面（三栏布局 + 模态框）
-├── css/
-│   └── style.css           # 暗色科幻主题样式
-├── js/
-│   ├── app.js              # 核心逻辑（状态机 + LLM调用 + 渲染）
-│   ├── storage.js          # 存储层（server / localStorage 自动检测）
-│   ├── utils/
-│   │   └── sanitize.js     # 输入净化工具
-│   ├── trex/
-│   │   ├── runner.js       # Chrome 小恐龙游戏核心
-│   │   └── assets/         # 游戏资源文件
-│   ├── trex.js             # 小恐龙游戏初始化
-│   └── fireworks.js        # 烟花特效（启动时播放）
-├── install/
-│   ├── install.bat         # Windows 一键安装脚本
-│   └── install.sh          # Linux/macOS 一键安装脚本
-├── release/                # 发行版打包目录
-├── server.py               # Python 后端服务器（零依赖）
-├── .gitignore              # Git 忽略规则
-├── LICENSE                 # MIT 许可证
-├── README.md               # 项目说明（本文件）
-├── PROJECT_OVERVIEW.md     # 项目详细介绍
-└── CHANGELOG.md            # 版本更新日志
+├── server.py              # 无头叙事引擎入口（零依赖 HTTP + SSE）
+├── vectra/
+│   ├── __init__.py
+│   ├── store.py           # 持久化 + 确定性逻辑（事件/记忆/事实/关系图/兜底大脑）
+│   └── brain.py           # LLM 编排：信息整合 / 滚动摘要 / 剧情生成（含离线回退）
+├── openapi.yaml           # REST 契约（游戏侧对接的唯一真源）
+├── samples/
+│   └── demo_client.py     # Unity 调用链参考 demo
+└── docs / CHANGELOG
 ```
 
-#### 核心文件说明
+### 目录结构心智模型
 
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `js/app.js` | ~2000 | 主逻辑：状态机、LLM 调用、UI 渲染、事件处理 |
-| `js/storage.js` | ~400 | 存储适配器：自动检测 server/localStorage |
-| `server.py` | ~600 | Python 后端：静态文件服务 + REST API |
-| `css/style.css` | ~1500 | 暗色科幻主题样式 |
+每个世界 = `~/VectraData/worlds/<id>/` 下的一个目录：
 
----
+```
+world.json        # 设定(bible) + 玩家 + 实体名册 + 时钟 + LLM 配置 + 游标
+events.jsonl      # 游戏上报的原始事件（只追加）
+facts.jsonl       # 整合后的结构化事实
+graph.json        # NPC 关系图（节点/边，revision 递增）
+summary.json      # 滚动叙事摘要
+memories/<eid>.mem.jsonl + .index.json   # 每个实体的记忆流 + 召回索引
+```
 
-## 技术栈
-
-| 层 | 技术 | 说明 |
-|----|------|------|
-| 前端 | 原生 HTML + CSS + JavaScript | 零依赖，无需 npm/webpack/React |
-| 后端 | Python 标准库 `http.server` | 零依赖，无需 pip install |
-| LLM 接口 | OpenAI 格式 API | 兼容 DeepSeek、通义千问、智谱 AI 等 |
-| 存储 | 文件系统 / localStorage 双轨 | 自动检测，无缝切换 |
-| 安全 | CSRF + 输入净化 + 路径验证 | 防止常见 Web 攻击 |
-| 证书 | 自签名 SSL/TLS | 默认 HTTPS，可禁用 |
-
-#### 前端架构
-
-- **状态机**：四阶段创世流程 + 双模式切换
-- **LLM 调用**：OpenAI 格式 API，支持流式响应
-- **渲染**：原生 DOM 操作，无虚拟 DOM
-- **存储适配器**：自动检测 server/localStorage
-
-#### 后端架构
-
-- **静态文件服务**：直接托管前端文件
-- **REST API**：完整 CRUD 操作
-- **安全层**：CSRF、输入净化、路径验证、限流
-- **SSL/TLS**：自签名证书，可禁用
+数据通过游标（`cursors.ingested / integrated / summarized`）分段推进：
+**事件 → 信息整合 → 摘要**，各段互不重复处理。
 
 ---
 
-## 兼容性
-
-### 浏览器
-
-| 浏览器 | 版本 | 状态 |
-|--------|------|------|
-| Chrome | 最新版 | ✅ 完全支持 |
-| Firefox | 最新版 | ✅ 完全支持 |
-| Safari | 最新版 | ✅ 完全支持 |
-| Edge | 最新版 | ✅ 完全支持 |
-
-**注意**：小恐龙彩蛋仅在 Chrome 内核浏览器可用。
-
-### Python
-
-- **最低版本**：3.7+
-- **推荐版本**：3.9+
-- **依赖**：零依赖（仅使用标准库）
-
-### 操作系统
-
-| 系统 | 状态 | 备注 |
-|------|------|------|
-| Windows | ✅ 支持 | 推荐使用 PowerShell 或 CMD |
-| macOS | ✅ 支持 | 推荐使用 Terminal |
-| Linux | ✅ 支持 | 推荐使用 Bash |
-
-### API 提供商
-
-- **OpenAI**：官方 API，全球可用
-- **DeepSeek**：国内访问快，性价比高
-- **本地 Ollama**：无需联网，数据隐私
-
----
-
-## 常见问题
-
-### Q: 数据存储在哪里？
-
-**A:**
-- **前端模式**：浏览器 `localStorage`（清除缓存会丢失）
-- **后端模式**：`~/VectraData/` 目录（持久化保存）
-
-### Q: 如何切换 API 提供商？
-
-**A:** 点击侧边栏 ⚙ 按钮，修改 API 端点和模型 ID 即可。支持任何 OpenAI 格式的 API。
-
-### Q: 如何备份数据？
-
-**A:**
-- **前端模式**：导出 `localStorage` 数据（浏览器开发者工具）
-- **后端模式**：直接复制 `~/VectraData/` 目录
-
-### Q: 为什么 NPC 回复很慢？
-
-**A:**
-1. 检查网络连接
-2. 尝试更换更快的 API 提供商（如 DeepSeek）
-3. 降低 `Max Tokens` 值
-4. 检查 API 配额是否用完
-
-### Q: 如何添加更多 NPC 类型？
-
-**A:** 编辑 `js/app.js` 中的 NPC 类型定义，或在创世模式中通过播种者对话生成。
-
-### Q: 支持多人同时访问吗？
-
-**A:**
-- **前端模式**：不支持（每个浏览器独立）
-- **后端模式**：支持（多个浏览器可同时访问同一服务器）
-
----
-
-## 开发指南
-
-### 环境准备
+## 开发 / 测试
 
 ```bash
-# 克隆仓库
-git clone https://github.com/your-username/Vectra.git
-cd Vectra
-
-# 启动开发服务器（前端模式）
-open index.html
-
-# 启动后端服务器
-python3 server.py
+# 离线逻辑测试（无需服务器、无需 Key）
+python3 - <<'PY'
+from vectra.brain import NarrativeEngine
+e = NarrativeEngine('/tmp/vd')
+e.store.create_world('w', 'W')
+# ... push events -> integrate(live=False) -> summarize(live=False)
+PY
 ```
 
-### 代码结构
-
-- **前端**：`js/app.js` 是核心，包含状态机和所有 UI 逻辑
-- **后端**：`server.py` 是单文件服务器，包含所有 API 路由
-- **样式**：`css/style.css` 是暗色科幻主题
-
-### 调试技巧
-
-1. **浏览器开发者工具**：F12 打开，查看 Console 和 Network
-2. **后端日志**：`~/VectraData/server.log`
-3. **API 测试**：使用 Postman 或 curl 测试后端 API
-
-### 构建发行版
-
-```bash
-# 运行打包脚本
-cd release
-python3 build.py
-```
+改 `server.py` 后直接重启即可，无构建链、无第三方依赖。
 
 ---
 
-## 贡献指南
+## 许可
 
-### 如何贡献
-
-1. Fork 本仓库
-2. 创建特性分支：`git checkout -b feature/your-feature`
-3. 提交更改：`git commit -m 'Add some feature'`
-4. 推送到分支：`git push origin feature/your-feature`
-5. 创建 Pull Request
-
-### 代码规范
-
-- **前端**：遵循原生 JavaScript 风格，避免使用框架
-- **后端**：遵循 PEP 8 Python 风格
-- **注释**：关键逻辑添加注释，但不要过度注释
-
-### 提交规范
-
-- **feat**: 新功能
-- **fix**: 修复 bug
-- **docs**: 文档更新
-- **style**: 代码格式调整
-- **refactor**: 代码重构
-- **test**: 添加测试
-- **chore**: 构建/工具链更新
-
----
-
-## 许可证
-
-本项目采用 MIT 许可证
-
-## 致谢
-- 致敬所有的开源作者们
-- 致敬所有时刻奋战在一线的计算机工作者们
-
-## 闲话&搞笑后记
-- 开发者是一个啥也不会的哈基米，第一次用GitHub，请多多指教哈
-- 哦对了，你不会以为这代码是本人写的？代码99%都是DeepSeek写的（哪为什么注释这样多
-- 本人一点代码都不会（除了cin>>和print()这种）交bug记得写简单点（太难看不懂）
-- 想看开发者日常点个心，以后会用AI写更多胡思乱想…阿不，奇思妙想
-- 文明交流，共创好环境
-
-
+MIT — VECTRA 2 · 让任何 2D 游戏都拥有一个会说故事的 AI 大脑。

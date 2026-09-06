@@ -1,0 +1,423 @@
+openapi: 3.0.3
+info:
+  title: VECTRA — headless AI narrative engine
+  description: >
+    The narrative "brain" layer that a 2D game engine (Unity / Godot / Cocos,
+    or any HTTP client) drives while the game renders everything else. The game
+    reports events (`POST /events`), the engine integrates them into facts +
+    per-entity memory + an NPC relationship graph (`POST /integrate`), keeps a
+    rolling narrative summary (`POST /summarize`), and answers story queries
+    (`GET /summary`, `GET /graph`) and narration/dialogue generation
+    (`POST /narrate`, SSE capable).
+
+    Engine runs zero-dependency (Python stdlib). With no API key configured it
+    serves deterministic results; point it at any OpenAI-format LLM to upgrade
+    integration/summarization/generation to live inference.
+  version: 2.0.0
+servers:
+  - url: http://127.0.0.1:8237/v1
+security:
+  - X-Vectra-Token: []
+tags:
+  - name: System
+  - name: Worlds
+  - name: Entities & Memory
+  - name: Events
+  - name: Narrative
+
+paths:
+  /status:
+    get:
+      tags: [System]
+      summary: Engine health + configured worlds
+      responses:
+        '200':
+          description: OK
+          content: {application/json: {schema: {type: object}}}
+
+  /config:
+    get:
+      tags: [System]
+      summary: Whether a default LLM is configured
+      responses: {'200': {description: OK}}
+
+  /worlds:
+    get:
+      tags: [Worlds]
+      summary: List worlds
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: {worlds: {type: array, items: {type: object}}}
+    post:
+      tags: [Worlds]
+      summary: Create a world (game session)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: {type: string, description: 'URL-safe world id'}
+                name: {type: string}
+                manifest:
+                  type: object
+                  description: optional static bible/setting + player
+                  properties:
+                    setting: {type: object}
+                    player: {type: object, properties: {id: {type: string}, name: {type: string}, desc: {type: string}}}
+                llm:
+                  type: object
+                  properties:
+                    endpoint: {type: string, description: OpenAI-format base URL e.g. https://api.deepseek.com/v1}
+                    key: {type: string}
+                    model: {type: string}
+      responses:
+        '201': {description: Created}
+        '409': {description: world exists}
+
+  /worlds/{worldId}:
+    parameters: [{name: worldId, in: path, required: true, schema: {type: string}}]
+    get:
+      tags: [Worlds]
+      summary: Get world setting + roster + clock
+      responses: {'200': {description: OK}}
+    patch:
+      tags: [Worlds]
+      summary: Update clock / llm / launched
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                clock: {type: object, properties: {day: {type: integer}, hour: {type: integer}, minute: {type: integer}}}
+                llm: {type: object}
+                launched: {type: boolean}
+      responses: {'200': {description: OK}}
+    delete:
+      tags: [Worlds]
+      summary: Delete a world
+      responses: {'200': {description: OK}}
+
+  /worlds/{worldId}/entities:
+    get:
+      tags: [Entities & Memory]
+      summary: List entities (roster)
+      responses: {'200': {description: OK}}
+    put:
+      tags: [Entities & Memory]
+      summary: Upsert the roster of story entities
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                entities:
+                  type: array
+                  items:
+                    type: object
+                    required: [id, name]
+                    properties:
+                      id: {type: string}
+                      name: {type: string}
+                      kind: {type: string, enum: [character, player, location, faction, item], default: character}
+                      desc: {type: string}
+                      traits: {type: array, items: {type: string}}
+                      speech: {type: object, properties: {style: {type: string}, tic: {type: string}}}
+      responses: {'200': {description: OK}}
+
+  /worlds/{worldId}/events:
+    get:
+      tags: [Events]
+      summary: Read events (optionally since a cursor)
+      parameters:
+        - {name: after, in: query, schema: {type: integer}, description: only events with seq > after}
+        - {name: limit, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events: {type: array, items: {type: object}}
+                  cursor: {type: integer}
+    post:
+      tags: [Events]
+      summary: Report what happened in the game
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                events:
+                  type: array
+                  items:
+                    type: object
+                    required: [text]
+                    properties:
+                      time: {type: string, example: 'D1 黄昏'}
+                      location: {type: string}
+                      actor: {type: string, description: entity id doing the action}
+                      verb: {type: string, description: canonical verb, e.g. 帮助/攻击/信任/告诉}
+                      target: {type: string}
+                      speaker: {type: string, description: entity id speaking, for dialogue lines}
+                      text: {type: string, description: human-readable description / line}
+                      payload: {type: object, description: freeform {note, tone: warm|neutral|hostile, ...}}
+      responses:
+        '201':
+          description: events appended
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: {added: {type: integer}, cursor: {type: integer}}
+
+  /worlds/{worldId}/integrate:
+    post:
+      tags: [Narrative]
+      summary: Consolidate pending events into facts + memory + relation deltas
+      description: The heart of "information integration". Deterministic when no LLM is configured.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  processed: {type: integer}
+                  cursor: {type: integer}
+                  facts: {type: integer}
+                  relations: {type: object}
+                  memories: {type: integer}
+                  online: {type: boolean}
+
+  /worlds/{worldId}/summarize:
+    post:
+      tags: [Narrative]
+      summary: Roll pending events into the rolling narrative summary
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: {processed: {type: integer}, uptoSeq: {type: integer}, online: {type: boolean}, summary: {type: object}}
+
+  /worlds/{worldId}/summary:
+    get:
+      tags: [Narrative]
+      summary: Current rolling narrative summary
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object}}}}}
+
+  /worlds/{worldId}/facts:
+    get:
+      tags: [Narrative]
+      summary: Consolidated fact list
+      responses: {'200': {description: OK}}
+
+  /worlds/{worldId}/graph:
+    get:
+      tags: [Narrative]
+      summary: Full NPC relationship graph (nodes + edges)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes: {type: array, items: {type: object}}
+                  edges:
+                    type: array
+                    description: edge fields a,b,affinity(-1..1),trust(-1..1),familiarity,summary
+                    items: {type: object}
+
+  /worlds/{worldId}/graph/{entityId}:
+    get:
+      tags: [Narrative]
+      summary: One entity's node + its relations (neighbors)
+      responses: {'200': {description: OK}}
+
+  /worlds/{worldId}/graph/edges/{entityA}/{entityB}:
+    put:
+      tags: [Narrative]
+      summary: Manually set a relationship edge (override)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                affinity: {type: number}
+                trust: {type: number}
+                familiarity: {type: integer}
+                summary: {type: string}
+      responses: {'200': {description: OK}}
+
+  /worlds/{worldId}/entities/{entityId}/memories:
+    get:
+      tags: [Entities & Memory]
+      summary: Recall an entity's memory
+      parameters:
+        - {name: recent, in: query, schema: {type: integer}}
+        - {name: tags, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: {entries: {type: array}, index: {type: object}}
+    post:
+      tags: [Entities & Memory]
+      summary: Append memory entries to an entity
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                entries:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type: {type: string, default: observation}
+                      tags: {type: array, items: {type: string}}
+                      content: {type: string}
+                      importance: {type: integer}
+      responses: {'200': {description: OK}}
+    put:
+      tags: [Entities & Memory]
+      summary: Overwrite an entity's full memory
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {entries: {type: array}}
+      responses: {'200': {description: OK}}
+
+  /worlds/{worldId}/entities/{entityId}/memories/query:
+    post:
+      tags: [Entities & Memory]
+      summary: Scored memory recall by tags / importance / recency
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tags: {type: array, items: {type: string}}
+                minImportance: {type: integer}
+                recent: {type: integer}
+                maxChars: {type: integer}
+      responses: {'200': {description: OK}}
+
+  /worlds/{worldId}/narrate:
+    post:
+      tags: [Narrative]
+      summary: Generate a narration beat / dialogue line
+      description: Send stream:true to receive text/event-stream deltas.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                who: {type: string, description: entity id whose POV / memory to use}
+                prompt: {type: string, description: what to generate}
+                stream: {type: boolean, default: false}
+      responses:
+        '200':
+          description: OK (JSON {text}) or text/event-stream when stream:true
+
+  /worlds/{worldId}/decide:
+    post:
+      tags: [Narrative]
+      summary: NPC behavior decision — pick its next real action
+      description: >
+        The behavior brain. Given an NPC's persona + memory + relations + live
+        scene it returns ONE structured intent. action.skill is ALWAYS drawn
+        from the skill manifest (and honours the optional `groups` filter), so
+        the game can execute it as a real function. Deterministic when no LLM.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                who: {type: string, description: NPC entity id; omitted -> first character}
+                groups:
+                  type: array
+                  items: {type: string, enum: [move, social, item, combat]}
+                  description: restrict which skill groups may be chosen
+                prompt: {type: string, description: optional steering, e.g. current objective}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  who: {type: string}
+                  goal: {type: string}
+                  need: {type: string}
+                  emotion: {type: string}
+                  action:
+                    type: object
+                    properties:
+                      skill: {type: string, example: talk_to}
+                      args: {type: object, description: parameters per the manifest entry}
+                  speech: {type: string}
+                  online: {type: boolean}
+                  coerced: {type: boolean, description: true when the chosen skill had to be forced valid}
+
+  /worlds/{worldId}/skills:
+    get:
+      tags: [Narrative]
+      summary: The skill manifest (the only actions a decision may pick)
+      parameters:
+        - {name: groups, in: query, schema: {type: string}, description: comma-separated group filter}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skills:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: {type: string}
+                        group: {type: string, enum: [move, social, item, combat]}
+                        desc: {type: string}
+                        args: {type: object}
+
+components:
+  securitySchemes:
+    X-Vectra-Token:
+      type: apiKey
+      in: header
+      name: X-Vectra-Token
+      description: Optional shared write token (server env VECTRA_API_TOKEN).
