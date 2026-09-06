@@ -11,6 +11,11 @@ A game engine (Unity / Godot / Cocos / any HTTP client) drives this service:
     game  <- GET  /v1/worlds/{id}/summary         # 叙事摘要
              GET  /v1/worlds/{id}/graph           # NPC 关系图
              POST /v1/worlds/{id}/narrate         # narration / dialogue (SSE)
+    game  <-- GET /v1/worlds/{id}/stream          # SSE subscribe: receive NPC
+                                                   #   autonomous intents (push)
+    brain ->  autonomous pump (per-world, cadence) decides NPCs & pushes them
+              via /stream when a subscriber is connected; game executes the
+              skill then reports the result back through POST /events.
 
 Config:
     VECTRA_PORT   port (default 8237)
@@ -24,6 +29,8 @@ import os
 import re
 import sys
 import time
+import queue
+import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -37,6 +44,47 @@ DATA_DIR = os.environ.get('VECTRA_DATA',
                           os.path.join(os.path.expanduser('~'), 'VectraData'))
 API_TOKEN = os.environ.get('VECTRA_API_TOKEN', '')
 RATE = 1200  # req/min per IP
+
+
+# ---------------------------------------------------------------------------
+# SSE pub/sub hub — lets VECTRA PUSH events to subscribed game engines, the
+# key channel for autonomous NPC behavior (a game can't "ask" for something
+# Vectra decided on its own; Vectra must stream it out).
+# ---------------------------------------------------------------------------
+class _Hub:
+    def __init__(self):
+        self._subs = {}
+        self._lock = threading.Lock()
+
+    def subscribe(self, world):
+        q = queue.Queue(maxsize=128)
+        with self._lock:
+            self._subs.setdefault(world, set()).add(q)
+        return q
+
+    def unsubscribe(self, world, q):
+        with self._lock:
+            s = self._subs.get(world)
+            if s:
+                s.discard(q)
+                if not s:
+                    self._subs.pop(world, None)
+
+    def publish(self, world, payload):
+        with self._lock:
+            qs = list(self._subs.get(world, ()))
+        for q in qs:
+            try:
+                q.put_nowait(payload)
+            except queue.Full:
+                pass  # slow consumer: drop rather than block the brain
+
+    def n_subscribers(self, world):
+        with self._lock:
+            return len(self._subs.get(world, ()))
+
+
+hub = _Hub()
 
 
 def _now():
@@ -183,8 +231,9 @@ class VectraHandler(BaseHTTPRequestHandler):
             if m == 'GET':
                 w = st.load_world(wid)
                 self._send_json({k: w[k] for k in
-                                 ('id', 'name', 'launched', 'clock',
-                                  'manifest', 'entities') if k in w})
+                                 ('id', 'name', 'launched', 'autonomous',
+                                  'cadence', 'clock', 'manifest', 'entities')
+                                 if k in w})
             elif m == 'DELETE':
                 if not self._authorize_write(): return
                 st.delete_world(wid)
@@ -196,8 +245,14 @@ class VectraHandler(BaseHTTPRequestHandler):
                     st.set_clock(wid, b['clock'])
                 if 'llm' in b:
                     self.engine.set_llm(wid, b['llm'])
-                if 'launched' in b:
-                    w = st.load_world(wid); w['launched'] = bool(b['launched'])
+                if 'launched' in b or 'autonomous' in b or 'cadence' in b:
+                    w = st.load_world(wid)
+                    if 'launched' in b:
+                        w['launched'] = bool(b['launched'])
+                    if 'autonomous' in b:
+                        w['autonomous'] = bool(b['autonomous'])
+                    if 'cadence' in b:
+                        w['cadence'] = max(1, int(b['cadence'] or 5))
                     st.save_world(wid, w)
                 self._send_json({'ok': True})
             else:
@@ -322,11 +377,16 @@ class VectraHandler(BaseHTTPRequestHandler):
             out = self.engine.decide(wid, spec, live=True)
             if out is None:
                 self._error(404, 'world not found'); return
+            if isinstance(out, dict) and out.get('action', {}).get('skill'):
+                hub.publish(wid, self._intent_payload(wid, out))
             self._send_json(out); return
         if head == 'skills' and len(p) == 3 and m == 'GET':
             spec = {'groups': self._q_list('groups')} or {}
             man = self.engine.skill_manifest(spec.get('groups') or None)
             self._send_json({'skills': man}); return
+        if head == 'stream' and len(p) == 3 and m == 'GET':
+            self._sse_loop(wid)
+            return
         self._error(404, 'not found')
 
     # -------------------------------------------------------------- helpers
@@ -375,6 +435,45 @@ class VectraHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    # ---- SSE subscribe loop: stream pushed events to one game engine -------
+    @staticmethod
+    def _frame(wf, event, data):
+        payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
+        wf.write(b'event: ' + event.encode('utf-8') + b'\ndata: ' + payload + b'\n\n')
+        wf.flush()
+
+    @staticmethod
+    def _intent_payload(world_id, decision):
+        d = dict(decision)
+        d.pop('online', None)
+        return {'type': 'npc.intent', 'world': world_id, 'ts': _now(), **d}
+
+    def _sse_loop(self, world_id):
+        q = hub.subscribe(world_id)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection', 'keep-alive')
+        self._cors()
+        self.end_headers()
+        try:
+            self._frame(self.wfile, 'ready', {'world': world_id,
+                                              'subscribers': hub.n_subscribers(world_id)})
+            while True:
+                try:
+                    item = q.get(timeout=15)
+                except queue.Empty:
+                    self.wfile.write(b': ping\n\n')
+                    self.wfile.flush()
+                    continue
+                if item is None:
+                    break
+                self._frame(self.wfile, item.get('type', 'event'), item)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            hub.unsubscribe(world_id, q)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self._cors()
@@ -387,10 +486,58 @@ class VectraHandler(BaseHTTPRequestHandler):
     def do_DELETE(self): self._dispatch()
 
 
+# ---------------------------------------------------------------------------
+# Autonomous pump — optional background thread. For worlds marked autonomous
+# with at least one connected subscriber, decide for one active NPC every
+# <cadence> seconds and PUSH the intent to the game over SSE. No subscriber,
+# no decision (saves LLM tokens and avoids pointless work).
+# ---------------------------------------------------------------------------
+class _AutonomousPump(threading.Thread):
+    def __init__(self, engine):
+        super().__init__(daemon=True, name='vectra-autopump')
+        self.engine = engine
+        self.cursor = {}
+        self._next = {}
+
+    def _active_characters(self, world):
+        return [e['id'] for e in world.get('entities', [])
+                if e.get('kind') in ('character', None, '')]
+
+    def run(self):
+        while True:
+            time.sleep(1.0)
+            now = time.time()
+            try:
+                for meta in self.engine.store.list_worlds():
+                    w = self.engine.store.load_world(meta['id'])
+                    if not w or not w.get('autonomous'):
+                        continue
+                    if hub.n_subscribers(meta['id']) == 0:
+                        self._next[meta['id']] = now  # wait until someone listens
+                        continue
+                    cadence = max(1, int(w.get('cadence', 5) or 5))
+                    if now < self._next.get(meta['id'], 0):
+                        continue
+                    chars = self._active_characters(w)
+                    if not chars:
+                        continue
+                    idx = self.cursor.get(meta['id'], 0) % len(chars)
+                    self.cursor[meta['id']] = idx + 1
+                    self._next[meta['id']] = now + cadence
+                    who = chars[idx]
+                    out = self.engine.decide(meta['id'], {'who': who}, live=True)
+                    if isinstance(out, dict) and out.get('action', {}).get('skill'):
+                        out.setdefault('who', who)
+                        hub.publish(meta['id'], VectraHandler._intent_payload(meta['id'], out))
+            except Exception as exc:  # never kill the pump
+                sys.stderr.write('[vectra] autopump error: %s\n' % exc)
+
+
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     engine = NarrativeEngine(DATA_DIR)
     VectraHandler.engine = engine
+    _AutonomousPump(engine).start()
     httpd = ThreadingHTTPServer((HOST, PORT), VectraHandler)
     print('=' * 54)
     print(f'  VECTRA 2 · headless AI narrative engine')

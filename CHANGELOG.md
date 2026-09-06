@@ -26,6 +26,10 @@ All notable changes to VECTRA will be documented in this file.
   让 NPC 依据 角色卡+记忆+关系+场景 产出结构化意图；动作只能从技能清单
   `SKILL_MANIFEST`（move/social/item/combat 共 9 种）选择，可用 `groups` 过滤，
   非法动作强制纠正；离线有确定性决策兜底，技能由游戏侧实现即可驱动真实行为。
+- **SSE 订阅推送 `/stream` + 自主决策泵**：解决"Vectra→游戏 主动消息"。游戏连上
+  `/worlds/{id}/stream` 订阅后，Vectra 侧自主泵按 `cadence` 轮流让活跃 NPC
+  `decide` 并把意图实时推送（`event: npc.intent`）；无订阅者则不自主触发，
+  避免空转烧 token。`PATCH /worlds/{id}` 支持 `{"autonomous":true,"cadence":N}`。
 - 完整 REST 契约 `openapi.yaml` + 参考调用链 `samples/demo_client.py`。
 - 写操作可选 `X-Vectra-Token` 共享令牌门禁；目录穿越净化沿用。
 

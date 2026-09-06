@@ -414,6 +414,24 @@ paths:
                         desc: {type: string}
                         args: {type: object}
 
+  /worlds/{worldId}/stream:
+    get:
+      tags: [Narrative]
+      summary: SSE subscribe — receive Vectra→game pushes (autonomous NPC intents)
+      description: >
+        Opens a Server-Sent Events stream. Vectra pushes `npc.intent` events
+        whenever an NPC makes an autonomous decision (background pump) or a
+        `POST /decide` result is broadcast. The game executes the received
+        skill, then reports the outcome back via `POST /events`.
+      responses:
+        '200':
+          description: >
+            text/event-stream. Events: `ready` on connect, then `npc.intent`
+            with data {type, world, ts, who, goal, need, emotion,
+            action:{skill,args}, speech}. `: ping` keep-alives are sent.
+          content:
+            text/event-stream: {}
+
 components:
   securitySchemes:
     X-Vectra-Token:

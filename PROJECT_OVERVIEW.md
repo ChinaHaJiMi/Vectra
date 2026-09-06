@@ -79,6 +79,7 @@
                    ▼
     游戏侧取用    GET /summary     GET /graph     POST /narrate（剧情文字/对白）
                  POST /decide（NPC 行为意图）→ 游戏执行技能 → 观察回填 /events
+   自主推送       GET /stream（SSE 订阅）← 自主决策泵按 cadence 推送 npc.intent
 ```
 
 内存中不存状态，全部落盘；每次请求按游标增量处理，天然适合超长流程。

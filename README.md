@@ -38,6 +38,37 @@
 > 记忆/关系随之更新，形成 **感知→决策→执行→观察** 的完整闭环。技能盘外、或
 > 超出 `groups` 限制的动作一律被拦，杜绝 LLM 凭空捏造不可执行的动作。
 
+### 游戏引擎与 Vectra 的同步（消息方向）
+
+同步分两条方向，机制不同：
+
+| 方向 | 谁主动 | 用什么 | 时机 |
+|------|--------|--------|------|
+| 游戏 → Vectra | 游戏引擎 | `POST /events`（上报即反馈游标） | 游戏里发生任何事、或执行完一个技能后 |
+| Vectra → 游戏 | Vectra | **`GET /worlds/{id}/stream`（SSE 长连接）** | NPC 自主决定行动时主动推送 |
+
+**关键：NPC 行为是 Vectra 自主发起的，游戏没法"主动问"。** 所以 Vectra 内置一个
+**自主决策泵**：把世界标为 `autonomous` 后，只要有游戏连着 `/stream` 订阅，它就按
+`cadence`（秒）轮流让每个活跃 NPC `decide`，并把意图实时 `SSE` 推给游戏。没有订阅者
+就不决策（省 token、不空转）。你只需在游戏侧用 Unity 的 `UnityWebRequest`/SSE 客户端
+挂住这条流，收到 `npc.intent` 就执行对应技能。
+
+```bash
+# 打开自主模式（cadence=每个 NPC 每隔几秒想一次动）
+curl -X PATCH $B/worlds/vale -H 'Content-Type: application/json' \
+     -d '{"autonomous":true,"cadence":2}'
+# 游戏侧长连接订阅（Unity C# 或任意 SSE 客户端），会不断收到：
+#   event: npc.intent
+#   data:  {"type":"npc.intent","world":"vale","ts":...,"who":"kid",
+#           "goal":"...","need":"...","emotion":"...",
+#           "action":{"skill":"talk_to","args":{"target":"p","prompt":"..."}},
+#           "speech":"..."}
+curl -N $B/worlds/vale/stream
+```
+
+> 你仍需在游戏里执行收到技能并回传结果（`POST /events`）。没有订阅者时 Vectra 不会
+> 自主触发，避免了"无人执行还烧 token"的空转。
+
 ### 离线兜底（重要）
 没有配 LLM Key 也能跑：整合/摘要/生成会走**确定性启发式**，结构与在线一致，
 方便你离线测试、写单元测试、或在不想付 token 时跑轻量逻辑。配上任意
